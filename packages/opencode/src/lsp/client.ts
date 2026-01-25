@@ -39,7 +39,17 @@ export namespace LSPClient {
     ),
   }
 
-  export async function create(input: { serverID: string; server: LSPServer.Handle; root: string }) {
+  export async function create(input: {
+    serverID: string
+    server: LSPServer.Handle
+    root: string
+    getClients: (file: string) => Promise<LSPClient.Info[]>
+    setup?(ctx: {
+      connection: ReturnType<typeof createMessageConnection>
+      initializeParams: Record<string, any>
+      getClients: (file: string) => Promise<LSPClient.Info[]>
+    }): void
+  }) {
     const l = log.clone().tag("serverID", input.serverID)
     l.info("starting client")
 
@@ -78,41 +88,101 @@ export namespace LSPClient {
     ])
     connection.listen()
 
+    // Build initialize params with defaults
+    const initializeParams: Record<string, any> = {
+      rootUri: pathToFileURL(input.root).href,
+      processId: input.server.process.pid,
+      rootPath: input.root,
+      workspaceFolders: [
+        {
+          name: path.basename(input.root),
+          uri: pathToFileURL(input.root).href,
+        },
+      ],
+      initializationOptions: {
+        ...input.server.initialization,
+      },
+      capabilities: {
+        window: {
+          workDoneProgress: true,
+        },
+        workspace: {
+          workspaceFolders: true,
+          configuration: true,
+          didChangeConfiguration: {
+            dynamicRegistration: true,
+          },
+          didChangeWatchedFiles: {
+            dynamicRegistration: true,
+          },
+          symbol: {
+            dynamicRegistration: true,
+          },
+        },
+        textDocument: {
+          synchronization: {
+            didSave: true,
+            didOpen: true,
+            didChange: true,
+            dynamicRegistration: true,
+          },
+          completion: {
+            dynamicRegistration: true,
+            completionItem: {
+              snippetSupport: true,
+            },
+          },
+          definition: {
+            dynamicRegistration: true,
+            linkSupport: true,
+          },
+          references: {
+            dynamicRegistration: true,
+          },
+          documentSymbol: {
+            dynamicRegistration: true,
+            hierarchicalDocumentSymbolSupport: true,
+            symbolKind: {
+              valueSet: Array.from({ length: 26 }, (_, i) => i + 1),
+            },
+          },
+          hover: {
+            dynamicRegistration: true,
+            contentFormat: ["markdown", "plaintext"],
+          },
+          signatureHelp: {
+            dynamicRegistration: true,
+          },
+          codeAction: {
+            dynamicRegistration: true,
+          },
+          rename: {
+            dynamicRegistration: true,
+            prepareSupport: true,
+          },
+          publishDiagnostics: {
+            dynamicRegistration: true,
+            relatedInformation: true,
+            tagSupport: {
+              valueSet: [1, 2],
+            },
+            versionSupport: true,
+          },
+          diagnostic: {
+            dynamicRegistration: true,
+          },
+        },
+      },
+    }
+
+    // Call setup hook before initialize - allows customizing connection handlers and capabilities
+    if (input.setup) {
+      input.setup({ connection, initializeParams, getClients: input.getClients })
+    }
+
     l.info("sending initialize")
     await withTimeout(
-      connection.sendRequest("initialize", {
-        rootUri: pathToFileURL(input.root).href,
-        processId: input.server.process.pid,
-        workspaceFolders: [
-          {
-            name: "workspace",
-            uri: pathToFileURL(input.root).href,
-          },
-        ],
-        initializationOptions: {
-          ...input.server.initialization,
-        },
-        capabilities: {
-          window: {
-            workDoneProgress: true,
-          },
-          workspace: {
-            configuration: true,
-            didChangeWatchedFiles: {
-              dynamicRegistration: true,
-            },
-          },
-          textDocument: {
-            synchronization: {
-              didOpen: true,
-              didChange: true,
-            },
-            publishDiagnostics: {
-              versionSupport: true,
-            },
-          },
-        },
-      }),
+      connection.sendRequest("initialize", initializeParams),
       45_000,
     ).catch((err) => {
       l.error("initialize error", { error: err })
@@ -145,34 +215,36 @@ export namespace LSPClient {
         return connection
       },
       notify: {
-        async open(input: { path: string }) {
-          input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-          const file = Bun.file(input.path)
+        async open(openInput: { path: string }) {
+          openInput.path = path.isAbsolute(openInput.path)
+            ? openInput.path
+            : path.resolve(Instance.directory, openInput.path)
+          const file = Bun.file(openInput.path)
           const text = await file.text()
-          const extension = path.extname(input.path)
+          const extension = path.extname(openInput.path)
           const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-          const version = files[input.path]
+          const version = files[openInput.path]
           if (version !== undefined) {
-            log.info("workspace/didChangeWatchedFiles", input)
+            l.info("workspace/didChangeWatchedFiles", openInput)
             await connection.sendNotification("workspace/didChangeWatchedFiles", {
               changes: [
                 {
-                  uri: pathToFileURL(input.path).href,
+                  uri: pathToFileURL(openInput.path).href,
                   type: 2, // Changed
                 },
               ],
             })
 
             const next = version + 1
-            files[input.path] = next
-            log.info("textDocument/didChange", {
-              path: input.path,
+            files[openInput.path] = next
+            l.info("textDocument/didChange", {
+              path: openInput.path,
               version: next,
             })
             await connection.sendNotification("textDocument/didChange", {
               textDocument: {
-                uri: pathToFileURL(input.path).href,
+                uri: pathToFileURL(openInput.path).href,
                 version: next,
               },
               contentChanges: [{ text }],
@@ -180,38 +252,98 @@ export namespace LSPClient {
             return
           }
 
-          log.info("workspace/didChangeWatchedFiles", input)
+          l.info("workspace/didChangeWatchedFiles", openInput)
           await connection.sendNotification("workspace/didChangeWatchedFiles", {
             changes: [
               {
-                uri: pathToFileURL(input.path).href,
+                uri: pathToFileURL(openInput.path).href,
                 type: 1, // Created
               },
             ],
           })
 
-          log.info("textDocument/didOpen", input)
-          diagnostics.delete(input.path)
+          l.info("textDocument/didOpen", openInput)
+          diagnostics.delete(openInput.path)
           await connection.sendNotification("textDocument/didOpen", {
             textDocument: {
-              uri: pathToFileURL(input.path).href,
+              uri: pathToFileURL(openInput.path).href,
               languageId,
               version: 0,
               text,
             },
           })
-          files[input.path] = 0
+          files[openInput.path] = 0
+
+          // Request diagnostics after opening file
+          const uri = pathToFileURL(openInput.path).href
+          try {
+            l.info("textDocument/diagnostic", { path: openInput.path })
+            const response = await withTimeout(
+              connection.sendRequest("textDocument/diagnostic", {
+                textDocument: { uri },
+              }),
+              10_000,
+            )
+            l.info("textDocument/diagnostic response", { path: openInput.path, response })
+            if (response && typeof response === "object") {
+              const items = (response as any).items ?? []
+              const fileDiagnostics: Diagnostic[] = items.map((item: any) => ({
+                ...item,
+                uri,
+              }))
+              diagnostics.set(openInput.path, fileDiagnostics)
+              Bus.publish(Event.Diagnostics, { path: openInput.path, serverID: input.serverID })
+            }
+          } catch (err) {
+            // textDocument/diagnostic may not be supported by all servers, ignore errors
+            l.info("textDocument/diagnostic error", { path: openInput.path, error: err })
+          } finally {
+            // Close the document after getting diagnostics
+            l.info("textDocument/didClose", { path: openInput.path })
+            await connection.sendNotification("textDocument/didClose", {
+              textDocument: { uri },
+            })
+            delete files[openInput.path]
+          }
+
           return
+        },
+      },
+      request: {
+        async diagnostics(requestInput: { path: string }): Promise<Diagnostic[]> {
+          const filePath = path.isAbsolute(requestInput.path)
+            ? requestInput.path
+            : path.resolve(Instance.directory, requestInput.path)
+          const uri = pathToFileURL(filePath).href
+
+          l.info("textDocument/diagnostic", { path: filePath })
+
+          const response = await connection.sendRequest("textDocument/diagnostic", {
+            textDocument: { uri },
+          })
+
+          if (!response || typeof response !== "object") {
+            return []
+          }
+
+          const items = (response as any).items ?? []
+          return items.map((item: any) => ({
+            uri,
+            severity: item.severity,
+            message: item.message,
+            range: item.range,
+            code: item.code,
+          }))
         },
       },
       get diagnostics() {
         return diagnostics
       },
-      async waitForDiagnostics(input: { path: string }) {
+      async waitForDiagnostics(waitInput: { path: string }) {
         const normalizedPath = Filesystem.normalizePath(
-          path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path),
+          path.isAbsolute(waitInput.path) ? waitInput.path : path.resolve(Instance.directory, waitInput.path),
         )
-        log.info("waiting for diagnostics", { path: normalizedPath })
+        l.info("waiting for diagnostics", { path: normalizedPath })
         let unsub: () => void
         let debounceTimer: ReturnType<typeof setTimeout> | undefined
         return await withTimeout(
@@ -221,14 +353,14 @@ export namespace LSPClient {
                 // Debounce to allow LSP to send follow-up diagnostics (e.g., semantic after syntax)
                 if (debounceTimer) clearTimeout(debounceTimer)
                 debounceTimer = setTimeout(() => {
-                  log.info("got diagnostics", { path: normalizedPath })
+                  l.info("got diagnostics", { path: normalizedPath })
                   unsub?.()
                   resolve()
                 }, DIAGNOSTICS_DEBOUNCE_MS)
               }
             })
           }),
-          3000,
+          13000,
         )
           .catch(() => {})
           .finally(() => {

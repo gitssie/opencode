@@ -56,6 +56,11 @@ export namespace LSPServer {
     global?: boolean
     root: RootFunction
     spawn(root: string): Promise<Handle | undefined>
+    setup?(ctx: {
+      connection: import("vscode-jsonrpc/node").MessageConnection
+      initializeParams: Record<string, any>
+      getClients: (file: string) => Promise<import("./client").LSPClient.Info[]>
+    }): void
   }
 
   export const Deno: Info = {
@@ -92,11 +97,16 @@ export namespace LSPServer {
       ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"],
       ["deno.json", "deno.jsonc"],
     ),
-    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
       const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
       log.info("typescript server", { tsserver })
       if (!tsserver) return
+
+      // Try to find @vue/typescript-plugin for Vue file support (installed with @vue/language-server in Global.Path.bin)
+      const vuePluginPath = await Bun.resolve("@vue/typescript-plugin", Global.Path.bin).catch(() => {})
+      const tsdk = tsserver ? path.dirname(tsserver) : undefined
+
       const proc = spawn(BunProc.which(), ["x", "typescript-language-server", "--stdio"], {
         cwd: root,
         env: {
@@ -104,13 +114,28 @@ export namespace LSPServer {
           BUN_BE_BUN: "1",
         },
       })
+
+      const initialization: Record<string, any> = {
+        tsserver: {
+          path: tsserver,
+        },
+      }
+
+      // Configure @vue/typescript-plugin if available
+      if (vuePluginPath && tsdk) {
+        log.info("vue typescript plugin found", { vuePluginPath, tsdk })
+        initialization.plugins = [
+          {
+            name: "@vue/typescript-plugin",
+            location: path.dirname(vuePluginPath),
+            languages: ["vue"],
+          },
+        ]
+      }
+
       return {
         process: proc,
-        initialization: {
-          tsserver: {
-            path: tsserver,
-          },
-        },
+        initialization,
       }
     },
   }
@@ -155,12 +180,81 @@ export namespace LSPServer {
           BUN_BE_BUN: "1",
         },
       })
+
+      // Find TypeScript SDK path for Vue (typescript installed in Instance.directory)
+      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
+      const tsdk = tsserver ? path.dirname(tsserver) : undefined
+
       return {
         process: proc,
         initialization: {
-          // Leave empty; the server will auto-detect workspace TypeScript.
+          vue: {
+            hybridMode: true, // Enable hybrid mode - Vue LS handles .vue, TS LS handles .ts/.js
+          },
+          typescript: {
+            tsdk: tsdk,
+          },
         },
       }
+    },
+    setup({ connection, getClients, initializeParams }) {
+      // Helper function to find tsconfig.json for a file using Filesystem.up
+      const findTsconfigForFile = async (filePath: string): Promise<string | null> => {
+        const startDir = filePath ? path.dirname(filePath) : Instance.directory
+        const files = Filesystem.up({
+          targets: ["tsconfig.json"],
+          start: startDir,
+          stop: Instance.directory,
+        })
+        const first = await files.next()
+        await files.return()
+        return first.value ?? null
+      }
+
+      // Register tsserver/request notification handler for Vue hybrid mode
+      connection.onNotification("tsserver/request", async (params: any[]) => {
+        if (params && params.length > 0 && params[0].length >= 2) {
+          const requestId = params[0][0]
+          const method = params[0][1]
+          const methodParams = params[0][2] ?? {}
+          log.info("tsserver/request", { requestId, method })
+
+          // Handle _vue:projectInfo specially - find tsconfig.json
+          if (method === "_vue:projectInfo") {
+            const filePath = methodParams.file ?? ""
+            const tsconfigPath = await findTsconfigForFile(filePath)
+            const result = tsconfigPath ? { configFileName: tsconfigPath } : null
+            connection.sendNotification("tsserver/response", [[requestId, result]])
+            log.info("tsserver/response for projectInfo", { tsconfigPath })
+            return
+          }
+
+          // Get file path from params to find the right TypeScript server
+          const file = methodParams.file ?? ""
+
+          // Find TypeScript server to forward the request
+          const clients = await getClients(file)
+          const tsClient = clients.find((c) => c.serverID === "typescript")
+          if (tsClient) {
+            // Forward request to TypeScript server
+            tsClient.connection
+              .sendRequest("workspace/executeCommand", {
+                command: "typescript.tsserverRequest",
+                arguments: [method, methodParams, { isAsync: true, lowPriority: true }],
+              })
+              .then((result: any) => {
+                const body = result?.body ?? result
+                connection.sendNotification("tsserver/response", [[requestId, body]])
+              })
+              .catch(() => {
+                connection.sendNotification("tsserver/response", [[requestId, null]])
+              })
+          } else {
+            // No TypeScript server available, send empty response
+            connection.sendNotification("tsserver/response", [[requestId, null]])
+          }
+        }
+      })
     },
   }
 

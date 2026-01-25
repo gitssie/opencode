@@ -199,6 +199,8 @@ export namespace LSP {
         serverID: server.id,
         server: handle,
         root,
+        getClients,
+        setup: server.setup,
       }).catch((err) => {
         s.broken.add(key)
         handle.process.kill()
