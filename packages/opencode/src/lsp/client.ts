@@ -234,7 +234,7 @@ export namespace LSPClient {
       get diagnostics() {
         return diagnostics
       },
-      async waitForDiagnostics(waitInput: { path: string }) {
+      async waitForDiagnostics(waitInput: { path: string; timeout?: number }) {
         const normalizedPath = Filesystem.normalizePath(
           path.isAbsolute(waitInput.path) ? waitInput.path : path.resolve(Instance.directory, waitInput.path),
         )
@@ -260,7 +260,7 @@ export namespace LSPClient {
               })
             }
           }),
-          10000,
+          waitInput.timeout ?? 3000,
         )
           .catch(() => {})
           .finally(() => {

@@ -120,7 +120,7 @@ export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
     const relPath = path.relative(Instance.worktree, filepath)
     const title = `diagnostics ${relPath}`
 
-    await LSP.touchFile(filepath, true)
+    await LSP.touchFile(filepath, true, 20000)
     const diagnostics = await LSP.diagnostics()
     const normalizedFilepath = Filesystem.normalizePath(filepath)
 

@@ -276,13 +276,13 @@ export namespace LSP {
     return false
   }
 
-  export async function touchFile(input: string, waitForDiagnostics?: boolean) {
+  export async function touchFile(input: string, waitForDiagnostics?: boolean, timeout?: number) {
     log.info("touching file", { file: input })
     const clients = await getClients(input)
     await Promise.all(
       clients.map(async (client) => {
         await client.notify.open({ path: input })
-        const wait = waitForDiagnostics ? client.waitForDiagnostics({ path: input }) : Promise.resolve()
+        const wait = waitForDiagnostics ? client.waitForDiagnostics({ path: input, timeout }) : Promise.resolve()
         return wait
       }),
     ).catch((err) => {

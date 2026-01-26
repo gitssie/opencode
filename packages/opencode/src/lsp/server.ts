@@ -285,11 +285,9 @@ export namespace LSPServer {
           vue: {
             hybridMode: true, // Enable hybrid mode - Vue LS handles .vue, TS LS handles .ts/.js
           },
-          ...(tsserver && {
-            typescript: {
-              tsdk: path.dirname(tsserver),
-            },
-          }),
+          typescript: {
+            tsdk: path.dirname(tsserver!),
+          },
         },
       }
     },
