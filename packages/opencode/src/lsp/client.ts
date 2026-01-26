@@ -42,33 +42,34 @@ export namespace LSPClient {
   export async function create(input: {
     serverID: string
     server: LSPServer.Handle
+    info: LSPServer.Info
     root: string
     getClients: (file: string) => Promise<LSPClient.Info[]>
-    setup?(ctx: {
-      connection: ReturnType<typeof createMessageConnection>
-      initializeParams: Record<string, any>
-      getClients: (file: string) => Promise<LSPClient.Info[]>
-    }): void
   }) {
     const l = log.clone().tag("serverID", input.serverID)
     l.info("starting client")
-
+   
     const connection = createMessageConnection(
       new StreamMessageReader(input.server.process.stdout as any),
       new StreamMessageWriter(input.server.process.stdin as any),
     )
 
     const diagnostics = new Map<string, Diagnostic[]>()
+
+    const publishDiagnostics = (filePath:string,diagnosticsInfo:Diagnostic[]) => {
+      const exists = diagnostics.has(filePath)
+      diagnostics.set(filePath, diagnosticsInfo)
+      if (!exists && input.serverID === "typescript") return
+      Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
+    }
+    
     connection.onNotification("textDocument/publishDiagnostics", (params) => {
       const filePath = Filesystem.normalizePath(fileURLToPath(params.uri))
       l.info("textDocument/publishDiagnostics", {
         path: filePath,
         count: params.diagnostics.length,
       })
-      const exists = diagnostics.has(filePath)
-      diagnostics.set(filePath, params.diagnostics)
-      if (!exists && input.serverID === "typescript") return
-      Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
+      publishDiagnostics(filePath,params.diagnostics)
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {
       l.info("window/workDoneProgress/create", params)
@@ -89,7 +90,7 @@ export namespace LSPClient {
     connection.listen()
 
     // Build initialize params with defaults
-    const initializeParams: Record<string, any> = {
+    const initialize: Record<string, any> = {
       rootUri: pathToFileURL(input.root).href,
       processId: input.server.process.pid,
       rootPath: input.root,
@@ -107,82 +108,32 @@ export namespace LSPClient {
           workDoneProgress: true,
         },
         workspace: {
-          workspaceFolders: true,
           configuration: true,
-          didChangeConfiguration: {
-            dynamicRegistration: true,
-          },
           didChangeWatchedFiles: {
-            dynamicRegistration: true,
-          },
-          symbol: {
             dynamicRegistration: true,
           },
         },
         textDocument: {
           synchronization: {
-            didSave: true,
             didOpen: true,
             didChange: true,
-            dynamicRegistration: true,
-          },
-          completion: {
-            dynamicRegistration: true,
-            completionItem: {
-              snippetSupport: true,
-            },
-          },
-          definition: {
-            dynamicRegistration: true,
-            linkSupport: true,
-          },
-          references: {
-            dynamicRegistration: true,
-          },
-          documentSymbol: {
-            dynamicRegistration: true,
-            hierarchicalDocumentSymbolSupport: true,
-            symbolKind: {
-              valueSet: Array.from({ length: 26 }, (_, i) => i + 1),
-            },
-          },
-          hover: {
-            dynamicRegistration: true,
-            contentFormat: ["markdown", "plaintext"],
-          },
-          signatureHelp: {
-            dynamicRegistration: true,
-          },
-          codeAction: {
-            dynamicRegistration: true,
-          },
-          rename: {
-            dynamicRegistration: true,
-            prepareSupport: true,
           },
           publishDiagnostics: {
-            dynamicRegistration: true,
-            relatedInformation: true,
-            tagSupport: {
-              valueSet: [1, 2],
-            },
             versionSupport: true,
-          },
-          diagnostic: {
-            dynamicRegistration: true,
           },
         },
       },
     }
 
     // Call setup hook before initialize - allows customizing connection handlers and capabilities
-    if (input.setup) {
-      input.setup({ connection, initializeParams, getClients: input.getClients })
+    let methods: {diagnostics?:(input: { path: string }) => Promise<Diagnostic[]>, ready?: () => Promise<void>} = {};
+    if (input.info.setup) {
+      methods = await input.info.setup({ connection, initialize, getClients: input.getClients })
     }
 
     l.info("sending initialize")
     await withTimeout(
-      connection.sendRequest("initialize", initializeParams),
+      connection.sendRequest("initialize", initialize),
       45_000,
     ).catch((err) => {
       l.error("initialize error", { error: err })
@@ -196,10 +147,14 @@ export namespace LSPClient {
 
     await connection.sendNotification("initialized", {})
 
-    if (input.server.initialization) {
+    if (initialize.initializationOptions?.settings) {
       await connection.sendNotification("workspace/didChangeConfiguration", {
-        settings: input.server.initialization,
+        settings: initialize.initializationOptions.settings,
       })
+    }
+
+    if(methods.ready){
+      await methods.ready?.()
     }
 
     const files: {
@@ -273,67 +228,7 @@ export namespace LSPClient {
             },
           })
           files[openInput.path] = 0
-
-          // Request diagnostics after opening file
-          const uri = pathToFileURL(openInput.path).href
-          try {
-            l.info("textDocument/diagnostic", { path: openInput.path })
-            const response = await withTimeout(
-              connection.sendRequest("textDocument/diagnostic", {
-                textDocument: { uri },
-              }),
-              10_000,
-            )
-            l.info("textDocument/diagnostic response", { path: openInput.path, response })
-            if (response && typeof response === "object") {
-              const items = (response as any).items ?? []
-              const fileDiagnostics: Diagnostic[] = items.map((item: any) => ({
-                ...item,
-                uri,
-              }))
-              diagnostics.set(openInput.path, fileDiagnostics)
-              Bus.publish(Event.Diagnostics, { path: openInput.path, serverID: input.serverID })
-            }
-          } catch (err) {
-            // textDocument/diagnostic may not be supported by all servers, ignore errors
-            l.info("textDocument/diagnostic error", { path: openInput.path, error: err })
-          } finally {
-            // Close the document after getting diagnostics
-            l.info("textDocument/didClose", { path: openInput.path })
-            await connection.sendNotification("textDocument/didClose", {
-              textDocument: { uri },
-            })
-            delete files[openInput.path]
-          }
-
           return
-        },
-      },
-      request: {
-        async diagnostics(requestInput: { path: string }): Promise<Diagnostic[]> {
-          const filePath = path.isAbsolute(requestInput.path)
-            ? requestInput.path
-            : path.resolve(Instance.directory, requestInput.path)
-          const uri = pathToFileURL(filePath).href
-
-          l.info("textDocument/diagnostic", { path: filePath })
-
-          const response = await connection.sendRequest("textDocument/diagnostic", {
-            textDocument: { uri },
-          })
-
-          if (!response || typeof response !== "object") {
-            return []
-          }
-
-          const items = (response as any).items ?? []
-          return items.map((item: any) => ({
-            uri,
-            severity: item.severity,
-            message: item.message,
-            range: item.range,
-            code: item.code,
-          }))
         },
       },
       get diagnostics() {
@@ -359,8 +254,13 @@ export namespace LSPClient {
                 }, DIAGNOSTICS_DEBOUNCE_MS)
               }
             })
+            if(methods.diagnostics){
+              methods.diagnostics({ path: normalizedPath }).then(diagnosticsInfo => {
+                publishDiagnostics(normalizedPath, diagnosticsInfo)
+              })
+            }
           }),
-          13000,
+          10000,
         )
           .catch(() => {})
           .finally(() => {

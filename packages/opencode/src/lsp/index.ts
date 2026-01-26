@@ -198,9 +198,9 @@ export namespace LSP {
       const client = await LSPClient.create({
         serverID: server.id,
         server: handle,
+        info: server,
         root,
         getClients,
-        setup: server.setup,
       }).catch((err) => {
         s.broken.add(key)
         handle.process.kill()
@@ -281,8 +281,8 @@ export namespace LSP {
     const clients = await getClients(input)
     await Promise.all(
       clients.map(async (client) => {
-        const wait = waitForDiagnostics ? client.waitForDiagnostics({ path: input }) : Promise.resolve()
         await client.notify.open({ path: input })
+        const wait = waitForDiagnostics ? client.waitForDiagnostics({ path: input }) : Promise.resolve()
         return wait
       }),
     ).catch((err) => {

@@ -95,17 +95,9 @@ export namespace Log {
   }
 
   let last = Date.now()
-  export function create(tags?: Record<string, any>) {
-    tags = tags || {}
 
-    const service = tags["service"]
-    if (service && typeof service === "string") {
-      const cached = loggers.get(service)
-      if (cached) {
-        return cached
-      }
-    }
-
+  // Internal create function that bypasses cache
+  function createInternal(tags: Record<string, any>): Logger {
     function build(message: any, extra?: Record<string, any>) {
       const prefix = Object.entries({
         ...tags,
@@ -150,7 +142,8 @@ export namespace Log {
         return result
       },
       clone() {
-        return Log.create({ ...tags })
+        // Create new logger with copied tags, bypassing cache
+        return createInternal({ ...tags })
       },
       time(message: string, extra?: Record<string, any>) {
         const now = Date.now()
@@ -170,6 +163,21 @@ export namespace Log {
         }
       },
     }
+    return result
+  }
+
+  export function create(tags?: Record<string, any>) {
+    tags = tags || {}
+
+    const service = tags["service"]
+    if (service && typeof service === "string") {
+      const cached = loggers.get(service)
+      if (cached) {
+        return cached
+      }
+    }
+
+    const result = createInternal(tags)
 
     if (service && typeof service === "string") {
       loggers.set(service, result)

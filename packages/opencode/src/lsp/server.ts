@@ -10,6 +10,9 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { Archive } from "../util/archive"
+import type { MessageConnection } from "vscode-jsonrpc/node"
+import type { LSPClient } from "./client"
+import { pathToFileURL } from "url"
 
 export namespace LSPServer {
   const log = Log.create({ service: "lsp.server" })
@@ -57,10 +60,10 @@ export namespace LSPServer {
     root: RootFunction
     spawn(root: string): Promise<Handle | undefined>
     setup?(ctx: {
-      connection: import("vscode-jsonrpc/node").MessageConnection
-      initializeParams: Record<string, any>
-      getClients: (file: string) => Promise<import("./client").LSPClient.Info[]>
-    }): void
+      connection: MessageConnection
+      initialize: Record<string, any>
+      getClients: (file: string) => Promise<LSPClient.Info[]>
+    }): Promise<{diagnostics?:(input: { path: string }) => Promise<LSPClient.Diagnostic[]>, ready?: () => Promise<void>}>
   }
 
   export const Deno: Info = {
@@ -99,13 +102,12 @@ export namespace LSPServer {
     ),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
+      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
       log.info("typescript server", { tsserver })
       if (!tsserver) return
 
       // Try to find @vue/typescript-plugin for Vue file support (installed with @vue/language-server in Global.Path.bin)
       const vuePluginPath = await Bun.resolve("@vue/typescript-plugin", Global.Path.bin).catch(() => {})
-      const tsdk = tsserver ? path.dirname(tsserver) : undefined
 
       const proc = spawn(BunProc.which(), ["x", "typescript-language-server", "--stdio"], {
         cwd: root,
@@ -117,13 +119,13 @@ export namespace LSPServer {
 
       const initialization: Record<string, any> = {
         tsserver: {
-          path: tsserver,
+          path: path.dirname(tsserver),
         },
       }
 
       // Configure @vue/typescript-plugin if available
-      if (vuePluginPath && tsdk) {
-        log.info("vue typescript plugin found", { vuePluginPath, tsdk })
+      if (vuePluginPath) {
+        log.info("vue typescript plugin found", { vuePluginPath })
         initialization.plugins = [
           {
             name: "@vue/typescript-plugin",
@@ -136,6 +138,100 @@ export namespace LSPServer {
       return {
         process: proc,
         initialization,
+      }
+    },
+    async setup({ initialize, connection }) {
+      // Merge TypeScript-specific capabilities into initialize params
+      initialize.capabilities = {
+        ...initialize.capabilities,
+        workspace: {
+          ...initialize.capabilities?.workspace,
+          workspaceFolders: true,
+          didChangeConfiguration: {
+            dynamicRegistration: true,
+          },
+          symbol: {
+            dynamicRegistration: true,
+          },
+        },
+        textDocument: {
+          ...initialize.capabilities?.textDocument,
+          synchronization: {
+            didSave: true,
+            dynamicRegistration: true,
+          },
+          completion: {
+            dynamicRegistration: true,
+            completionItem: {
+              snippetSupport: true,
+            },
+          },
+          definition: {
+            dynamicRegistration: true,
+          },
+          references: {
+            dynamicRegistration: true,
+          },
+          documentSymbol: {
+            dynamicRegistration: true,
+            hierarchicalDocumentSymbolSupport: true,
+            symbolKind: {
+              valueSet: Array.from({ length: 26 }, (_, i) => i + 1),
+            },
+          },
+          hover: {
+            dynamicRegistration: true,
+            contentFormat: ["markdown", "plaintext"],
+          },
+          signatureHelp: {
+            dynamicRegistration: true,
+          },
+          codeAction: {
+            dynamicRegistration: true,
+            codeActionLiteralSupport: {
+              codeActionKind: {
+                valueSet: [
+                  "",
+                  "quickfix",
+                  "refactor",
+                  "refactor.extract",
+                  "refactor.inline",
+                  "refactor.rewrite",
+                  "source",
+                  "source.organizeImports",
+                  "source.fixAll",
+                ],
+              },
+            },
+            isPreferredSupport: true,
+            disabledSupport: true,
+            dataSupport: true,
+            resolveSupport: {
+              properties: ["edit"],
+            },
+            honorsChangeAnnotations: false,
+          },
+          rename: {
+            dynamicRegistration: true,
+            prepareSupport: true,
+          },
+          publishDiagnostics: {
+            dynamicRegistration: true,
+            tagSupport: true,
+          },
+        },
+      }
+      return {
+        ready: () =>
+          new Promise<void>((resolve) => {
+            const timeout = setTimeout(() => resolve(), 5000)
+            connection.onNotification("experimental/serverStatus", (params: any) => {
+              if (params.quiescent === true) {
+                clearTimeout(timeout)
+                resolve()
+              }
+            })
+          }),
       }
     },
   }
@@ -181,23 +277,97 @@ export namespace LSPServer {
         },
       })
 
-      // Find TypeScript SDK path for Vue (typescript installed in Instance.directory)
-      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
-      const tsdk = tsserver ? path.dirname(tsserver) : undefined
-
+      // Find TypeScript SDK path for Vue
+      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
       return {
         process: proc,
         initialization: {
           vue: {
             hybridMode: true, // Enable hybrid mode - Vue LS handles .vue, TS LS handles .ts/.js
           },
-          typescript: {
-            tsdk: tsdk,
-          },
+          ...(tsserver && {
+            typescript: {
+              tsdk: path.dirname(tsserver),
+            },
+          }),
         },
       }
     },
-    setup({ connection, getClients, initializeParams }) {
+    async setup({ connection, getClients, initialize }) {
+      // Merge Vue-specific capabilities into initialize params
+      initialize.capabilities = {
+        ...initialize.capabilities,
+        window: {
+          ...initialize.capabilities?.window,
+          workDoneProgress: true,
+        },
+        workspace: {
+          ...initialize.capabilities?.workspace,
+          workspaceFolders: true,
+          configuration: true,
+          didChangeConfiguration: {
+            dynamicRegistration: true,
+          },
+          didChangeWatchedFiles: {
+            dynamicRegistration: true,
+          },
+          symbol: {
+            dynamicRegistration: true,
+          },
+        },
+        textDocument: {
+          ...initialize.capabilities?.textDocument,
+          synchronization: {
+            didSave: true,
+            didOpen: true,
+            didChange: true,
+            dynamicRegistration: true,
+          },
+          completion: {
+            dynamicRegistration: true,
+            completionItem: {
+              snippetSupport: true,
+            },
+          },
+          definition: {
+            dynamicRegistration: true,
+            linkSupport: true,
+          },
+          references: {
+            dynamicRegistration: true,
+          },
+          documentSymbol: {
+            dynamicRegistration: true,
+            hierarchicalDocumentSymbolSupport: true,
+            symbolKind: {
+              valueSet: Array.from({ length: 26 }, (_, i) => i + 1),
+            },
+          },
+          hover: {
+            dynamicRegistration: true,
+            contentFormat: ["markdown", "plaintext"],
+          },
+          signatureHelp: {
+            dynamicRegistration: true,
+          },
+          codeAction: {
+            dynamicRegistration: true,
+          },
+          rename: {
+            dynamicRegistration: true,
+            prepareSupport: true,
+          },
+          publishDiagnostics: {
+            dynamicRegistration: true,
+            relatedInformation: true,
+            tagSupport: {
+              valueSet: [1, 2],
+            },
+            versionSupport: false,
+          },
+        },
+      }
+
       // Helper function to find tsconfig.json for a file using Filesystem.up
       const findTsconfigForFile = async (filePath: string): Promise<string | null> => {
         const startDir = filePath ? path.dirname(filePath) : Instance.directory
@@ -213,24 +383,21 @@ export namespace LSPServer {
 
       // Register tsserver/request notification handler for Vue hybrid mode
       connection.onNotification("tsserver/request", async (params: any[]) => {
-        if (params && params.length > 0 && params[0].length >= 2) {
-          const requestId = params[0][0]
-          const method = params[0][1]
-          const methodParams = params[0][2] ?? {}
-          log.info("tsserver/request", { requestId, method })
+        if (params && params.length > 2) {
+          const requestId = params[0]
+          const method = params[1]
+          const methodParams = params[2]
+          log.debug("tsserver/request", { requestId, method,methodParams })
 
+          const file = methodParams.file ?? ""
           // Handle _vue:projectInfo specially - find tsconfig.json
           if (method === "_vue:projectInfo") {
-            const filePath = methodParams.file ?? ""
-            const tsconfigPath = await findTsconfigForFile(filePath)
+            const tsconfigPath = await findTsconfigForFile(file)
             const result = tsconfigPath ? { configFileName: tsconfigPath } : null
-            connection.sendNotification("tsserver/response", [[requestId, result]])
-            log.info("tsserver/response for projectInfo", { tsconfigPath })
+            connection.sendNotification("tsserver/response", [requestId, result])
+            log.debug("tsserver/response for projectInfo", { tsconfigPath })
             return
           }
-
-          // Get file path from params to find the right TypeScript server
-          const file = methodParams.file ?? ""
 
           // Find TypeScript server to forward the request
           const clients = await getClients(file)
@@ -243,18 +410,42 @@ export namespace LSPServer {
                 arguments: [method, methodParams, { isAsync: true, lowPriority: true }],
               })
               .then((result: any) => {
+                log.debug(`TypeScript server raw response for ${method}: ${result}`)
                 const body = result?.body ?? result
-                connection.sendNotification("tsserver/response", [[requestId, body]])
+                connection.sendNotification("tsserver/response", [requestId, body])
               })
-              .catch(() => {
-                connection.sendNotification("tsserver/response", [[requestId, null]])
+              .catch((e) => {
+                 log.error(`Error forwarding tsserver request ${method}: ${e}`)
+                connection.sendNotification("tsserver/response", [requestId, null])
               })
           } else {
             // No TypeScript server available, send empty response
-            connection.sendNotification("tsserver/response", [[requestId, null]])
+            connection.sendNotification("tsserver/response", [requestId, null])
           }
         }
       })
+      return {
+        ready: () =>
+          new Promise<void>((resolve) => {
+            const timeout = setTimeout(() => resolve(), 5000)
+            connection.onNotification("window/logMessage", (params: any) => {
+              const message = (params.message ?? "").toLowerCase()
+              if (message.includes("initialized") || message.includes("ready")) {
+                clearTimeout(timeout)
+                resolve()
+              }
+            })
+          }),
+        diagnostics:async (input: { path: string }) => {
+          const uri = pathToFileURL(input.path).href
+          log.debug("textDocument/diagnostic", { path: input.path })
+          const response = await connection.sendRequest("textDocument/diagnostic", {
+            textDocument: { uri },
+          });
+          const items = (response as any).items ?? []
+          return items as LSPClient.Diagnostic[]
+        }
+      }
     },
   }
 
@@ -1175,7 +1366,7 @@ export namespace LSPServer {
     extensions: [".astro"],
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
-      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
+      const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
       if (!tsserver) {
         log.info("typescript not found, required for Astro language server")
         return
@@ -1226,98 +1417,535 @@ export namespace LSPServer {
     root: NearestRoot(["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"]),
     extensions: [".java"],
     async spawn(root) {
-      const java = Bun.which("java")
-      if (!java) {
-        log.error("Java 21 or newer is required to run the JDTLS. Please install it first.")
-        return
-      }
-      const javaMajorVersion = await $`java -version`
-        .quiet()
-        .nothrow()
-        .then(({ stderr }) => {
-          const m = /"(\d+)\.\d+\.\d+"/.exec(stderr.toString())
-          return !m ? undefined : parseInt(m[1])
-        })
-      if (javaMajorVersion == null || javaMajorVersion < 21) {
-        log.error("JDTLS requires at least Java 21.")
-        return
-      }
-      const distPath = path.join(Global.Path.bin, "jdtls")
-      const launcherDir = path.join(distPath, "plugins")
-      const installed = await pathExists(launcherDir)
-      if (!installed) {
-        if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-        log.info("Downloading JDTLS LSP server.")
-        await fs.mkdir(distPath, { recursive: true })
-        const releaseURL =
-          "https://www.eclipse.org/downloads/download.php?file=/jdtls/snapshots/jdt-language-server-latest.tar.gz"
-        const archiveName = "release.tar.gz"
+      // Runtime dependency configuration based on platform
+      const platform = process.platform
+      const arch = process.arch
 
-        log.info("Downloading JDTLS archive", { url: releaseURL, dest: distPath })
-        const curlResult = await $`curl -L -o ${archiveName} '${releaseURL}'`.cwd(distPath).quiet().nothrow()
-        if (curlResult.exitCode !== 0) {
-          log.error("Failed to download JDTLS", { exitCode: curlResult.exitCode, stderr: curlResult.stderr.toString() })
+      const platformId = (() => {
+        if (platform === "darwin" && arch === "arm64") return "osx-arm64"
+        if (platform === "darwin" && arch === "x64") return "osx-x64"
+        if (platform === "linux" && arch === "arm64") return "linux-arm64"
+        if (platform === "linux" && arch === "x64") return "linux-x64"
+        if (platform === "win32" && arch === "x64") return "win-x64"
+        return undefined
+      })()
+
+      if (!platformId) {
+        log.error(`Platform ${platform}/${arch} is not supported by JDTLS`)
+        return
+      }
+
+      const vscodJavaConfig: Record<
+        string,
+        {
+          url: string
+          jreHomePath: string
+          jrePath: string
+          lombokJarPath: string
+          launcherJarPath: string
+          configPath: string
+        }
+      > = {
+        "osx-arm64": {
+          url: "https://github.com/redhat-developer/vscode-java/releases/download/v1.42.0/java-darwin-arm64-1.42.0-561.vsix",
+          jreHomePath: "extension/jre/21.0.7-macosx-aarch64",
+          jrePath: "extension/jre/21.0.7-macosx-aarch64/bin/java",
+          lombokJarPath: "extension/lombok/lombok-1.18.36.jar",
+          launcherJarPath: "extension/server/plugins/org.eclipse.equinox.launcher_1.7.0.v20250424-1814.jar",
+          configPath: "extension/server/config_mac_arm",
+        },
+        "osx-x64": {
+          url: "https://github.com/redhat-developer/vscode-java/releases/download/v1.42.0/java-darwin-x64-1.42.0-561.vsix",
+          jreHomePath: "extension/jre/21.0.7-macosx-x86_64",
+          jrePath: "extension/jre/21.0.7-macosx-x86_64/bin/java",
+          lombokJarPath: "extension/lombok/lombok-1.18.36.jar",
+          launcherJarPath: "extension/server/plugins/org.eclipse.equinox.launcher_1.7.0.v20250424-1814.jar",
+          configPath: "extension/server/config_mac",
+        },
+        "linux-arm64": {
+          url: "https://github.com/redhat-developer/vscode-java/releases/download/v1.42.0/java-linux-arm64-1.42.0-561.vsix",
+          jreHomePath: "extension/jre/21.0.7-linux-aarch64",
+          jrePath: "extension/jre/21.0.7-linux-aarch64/bin/java",
+          lombokJarPath: "extension/lombok/lombok-1.18.36.jar",
+          launcherJarPath: "extension/server/plugins/org.eclipse.equinox.launcher_1.7.0.v20250424-1814.jar",
+          configPath: "extension/server/config_linux",
+        },
+        "linux-x64": {
+          url: "https://github.com/redhat-developer/vscode-java/releases/download/v1.42.0/java-linux-x64-1.42.0-561.vsix",
+          jreHomePath: "extension/jre/21.0.7-linux-x86_64",
+          jrePath: "extension/jre/21.0.7-linux-x86_64/bin/java",
+          lombokJarPath: "extension/lombok/lombok-1.18.36.jar",
+          launcherJarPath: "extension/server/plugins/org.eclipse.equinox.launcher_1.7.0.v20250424-1814.jar",
+          configPath: "extension/server/config_linux",
+        },
+        "win-x64": {
+          url: "https://github.com/redhat-developer/vscode-java/releases/download/v1.50.0/java-win32-x64-1.50.0-769.vsix",
+          jreHomePath: "extension/jre/21.0.9-win32-x86_64",
+          jrePath: "extension/jre/21.0.9-win32-x86_64/bin/java.exe",
+          lombokJarPath: "extension/lombok/lombok-1.18.39-4050.jar",
+          launcherJarPath: "extension/server/plugins/org.eclipse.equinox.launcher_1.7.100.v20251111-0406.jar",
+          configPath: "extension/server/config_win",
+        },
+      }
+
+      const config = vscodJavaConfig[platformId]
+
+      // Check if user has Java >= 21 installed
+      let userJavaPath: string | undefined
+      let userJavaHomePath: string | undefined
+      const systemJava = Bun.which("java")
+      if (systemJava) {
+        const javaVersionResult = await $`java -version`.quiet().nothrow()
+        const versionMatch = /"(\d+)(?:\.\d+)*"/.exec(javaVersionResult.stderr.toString())
+        const majorVersion = versionMatch ? parseInt(versionMatch[1]) : 0
+        if (majorVersion >= 21) {
+          userJavaPath = systemJava
+          // Derive JAVA_HOME from java binary path (usually java is in JAVA_HOME/bin/java)
+          userJavaHomePath = path.dirname(path.dirname(systemJava))
+          log.info("Using system Java", { version: majorVersion, path: userJavaPath })
+        }
+      }
+
+      // Setup paths
+      const vscodJavaDir = path.join(Global.Path.bin, "vscode-java")
+      const jreHomePath = userJavaHomePath ?? path.join(vscodJavaDir, config.jreHomePath)
+      const jrePath = userJavaPath ?? path.join(vscodJavaDir, config.jrePath)
+      const lombokJarPath = path.join(vscodJavaDir, config.lombokJarPath)
+      const launcherJarPath = path.join(vscodJavaDir, config.launcherJarPath)
+      const readonlyConfigPath = path.join(vscodJavaDir, config.configPath)
+
+      // Download vscode-java if not exists
+      if (!(await pathExists(launcherJarPath))) {
+        if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) {
+          log.info("JDTLS download disabled")
           return
         }
 
-        log.info("Extracting JDTLS archive")
-        const tarResult = await $`tar -xzf ${archiveName}`.cwd(distPath).quiet().nothrow()
-        if (tarResult.exitCode !== 0) {
-          log.error("Failed to extract JDTLS", { exitCode: tarResult.exitCode, stderr: tarResult.stderr.toString() })
-          return
+        await fs.mkdir(vscodJavaDir, { recursive: true })
+        const archivePath = path.join(vscodJavaDir, "vscode-java.zip")
+
+        // Only download if archive doesn't exist
+        if (!(await pathExists(archivePath))) {
+          log.info("Downloading vscode-java for JDTLS", { url: config.url })
+          await $`curl -L -o ${archivePath} ${config.url}`.quiet().nothrow()
+          log.info("Downloaded vscode-java")
         }
 
-        await fs.rm(path.join(distPath, archiveName), { force: true })
-        log.info("JDTLS download and extraction completed")
+        log.info("Extracting vscode-java archive")
+        const ok = await Archive.extractZip(archivePath, vscodJavaDir)
+          .then(() => true)
+          .catch((err) => {
+            log.error("Failed to extract vscode-java archive", { error: err })
+            return false
+          })
+        if (!ok) return
+        await fs.rm(archivePath, { force: true })
+        // Make java executable on unix
+        if (platform !== "win32" && !userJavaPath) {
+          await fs.chmod(path.join(vscodJavaDir, config.jrePath), 0o755)
+        }
       }
-      const jarFileName = await $`ls org.eclipse.equinox.launcher_*.jar`
-        .cwd(launcherDir)
-        .quiet()
-        .nothrow()
-        .then(({ stdout }) => stdout.toString().trim())
-      const launcherJar = path.join(launcherDir, jarFileName)
-      if (!(await pathExists(launcherJar))) {
-        log.error(`Failed to locate the JDTLS launcher module in the installed directory: ${distPath}.`)
-        return
+
+      // Verify all required paths exist
+      const requiredPaths = [jrePath, lombokJarPath, launcherJarPath, readonlyConfigPath]
+      if (!userJavaPath) requiredPaths.push(jreHomePath)
+      for (const p of requiredPaths) {
+        if (!(await pathExists(p))) {
+          log.error("Required JDTLS path not found", { path: p })
+          return
+        }
       }
-      const configFile = path.join(
-        distPath,
-        (() => {
-          switch (process.platform) {
-            case "darwin":
-              return "config_mac"
-            case "linux":
-              return "config_linux"
-            case "win32":
-              return "config_win"
-            default:
-              return "config_linux"
-          }
-        })(),
-      )
-      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-jdtls-data"))
+
+      // Create workspace-specific directories using hash of root path
+      const crypto = await import("crypto")
+      const rootHash = crypto.createHash("md5").update(root).digest("hex")
+      const workspaceDir = path.join(Global.Path.bin, "jdtls-workspaces", rootHash)
+      const dataDir = path.join(workspaceDir, "data")
+      const configDir = path.join(workspaceDir, "config")
+      const sharedIndexDir = path.join(Global.Path.bin, "jdtls-shared-index")
+
+      await fs.mkdir(dataDir, { recursive: true })
+      await fs.mkdir(sharedIndexDir, { recursive: true })
+
+      // Copy config if not exists
+      if (!(await pathExists(configDir))) {
+        await fs.cp(readonlyConfigPath, configDir, { recursive: true })
+      }
+
+      // Build command arguments
+      const cmd = [
+        jrePath,
+        "--add-modules=ALL-SYSTEM",
+        "--add-opens",
+        "java.base/java.util=ALL-UNNAMED",
+        "--add-opens",
+        "java.base/java.lang=ALL-UNNAMED",
+        "--add-opens",
+        "java.base/sun.nio.fs=ALL-UNNAMED",
+        "-Declipse.application=org.eclipse.jdt.ls.core.id1",
+        "-Dosgi.bundles.defaultStartLevel=4",
+        "-Declipse.product=org.eclipse.jdt.ls.core.product",
+        "-Djava.import.generatesMetadataFilesAtProjectRoot=false",
+        "-Dfile.encoding=utf8",
+        "-XX:+UseParallelGC",
+        "-XX:GCTimeRatio=4",
+        "-XX:AdaptiveSizePolicyWeight=90",
+        "-Dsun.zip.disableMemoryMapping=true",
+        "-Djava.lsp.joinOnCompletion=true",
+        "-Xmx6G",
+        "-Xms1G",
+        "-Xlog:disable",
+        "-Dlog.level=WARNING",
+        `-javaagent:${lombokJarPath}`,
+        `-Djdt.core.sharedIndexLocation=${sharedIndexDir}`,
+        "-jar",
+        launcherJarPath,
+        "-configuration",
+        configDir,
+        "-data",
+        dataDir,
+      ]
+
+      const proc = spawn(cmd[0], cmd.slice(1), {
+        cwd: root,
+        env: {
+          ...process.env,
+          JAVA_HOME: jreHomePath,
+          syntaxserver: "false",
+        },
+      })
+
       return {
-        process: spawn(
-          java,
-          [
-            "-jar",
-            launcherJar,
-            "-configuration",
-            configFile,
-            "-data",
-            dataDir,
-            "-Declipse.application=org.eclipse.jdt.ls.core.id1",
-            "-Dosgi.bundles.defaultStartLevel=4",
-            "-Declipse.product=org.eclipse.jdt.ls.core.product",
-            "-Dlog.level=ALL",
-            "--add-modules=ALL-SYSTEM",
-            "--add-opens java.base/java.util=ALL-UNNAMED",
-            "--add-opens java.base/java.lang=ALL-UNNAMED",
-          ],
-          {
-            cwd: root,
+        process: proc,
+        initialization: {
+          jreHomePath,
+          jrePath,
+          lombokJarPath,
+          launcherJarPath,
+          configDir,
+          dataDir,
+          sharedIndexDir,
+        },
+      }
+    },
+    async setup({ initialize, connection }) {
+      const jreHomePath = initialize.initializationOptions?.jreHomePath ?? ""
+
+      // Merge JDTLS-specific capabilities and settings
+      initialize.capabilities = {
+        ...initialize.capabilities,
+        workspace: {
+          ...initialize.capabilities?.workspace,
+          applyEdit: true,
+          workspaceEdit: {
+            documentChanges: true,
+            resourceOperations: ["create", "rename", "delete"],
+            failureHandling: "textOnlyTransactional",
+            normalizesLineEndings: true,
+            changeAnnotationSupport: { groupsOnLabel: true },
           },
-        ),
+          didChangeConfiguration: { dynamicRegistration: true },
+          didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true },
+          symbol: {
+            dynamicRegistration: true,
+            symbolKind: { valueSet: Array.from({ length: 26 }, (_, i) => i + 1) },
+            tagSupport: { valueSet: [1] },
+            resolveSupport: { properties: ["location.range"] },
+          },
+          codeLens: { refreshSupport: true },
+          executeCommand: { dynamicRegistration: true },
+          configuration: true,
+          workspaceFolders: true,
+          semanticTokens: { refreshSupport: true },
+          fileOperations: {
+            dynamicRegistration: true,
+            didCreate: true,
+            didRename: true,
+            didDelete: true,
+            willCreate: true,
+            willRename: true,
+            willDelete: true,
+          },
+          inlineValue: { refreshSupport: true },
+          inlayHint: { refreshSupport: true },
+          diagnostics: { refreshSupport: true },
+        },
+        textDocument: {
+          ...initialize.capabilities?.textDocument,
+          publishDiagnostics: {
+            relatedInformation: true,
+            versionSupport: false,
+            tagSupport: { valueSet: [1, 2] },
+            codeDescriptionSupport: true,
+            dataSupport: true,
+          },
+          synchronization: {
+            dynamicRegistration: true,
+            willSave: true,
+            willSaveWaitUntil: true,
+            didSave: true,
+          },
+          completion: {
+            dynamicRegistration: true,
+            contextSupport: true,
+            completionItem: {
+              snippetSupport: false,
+              commitCharactersSupport: true,
+              documentationFormat: ["markdown", "plaintext"],
+              deprecatedSupport: true,
+              preselectSupport: true,
+              tagSupport: { valueSet: [1] },
+              insertReplaceSupport: false,
+              resolveSupport: { properties: ["documentation", "detail", "additionalTextEdits"] },
+              insertTextModeSupport: { valueSet: [1, 2] },
+              labelDetailsSupport: true,
+            },
+            insertTextMode: 2,
+            completionItemKind: {
+              valueSet: Array.from({ length: 25 }, (_, i) => i + 1),
+            },
+            completionList: {
+              itemDefaults: ["commitCharacters", "editRange", "insertTextFormat", "insertTextMode"],
+            },
+          },
+          hover: { dynamicRegistration: true, contentFormat: ["markdown", "plaintext"] },
+          signatureHelp: {
+            dynamicRegistration: true,
+            signatureInformation: {
+              documentationFormat: ["markdown", "plaintext"],
+              parameterInformation: { labelOffsetSupport: true },
+              activeParameterSupport: true,
+            },
+          },
+          definition: { dynamicRegistration: true, linkSupport: true },
+          references: { dynamicRegistration: true },
+          documentSymbol: {
+            dynamicRegistration: true,
+            symbolKind: { valueSet: Array.from({ length: 26 }, (_, i) => i + 1) },
+            hierarchicalDocumentSymbolSupport: true,
+            tagSupport: { valueSet: [1] },
+            labelSupport: true,
+          },
+          rename: {
+            dynamicRegistration: true,
+            prepareSupport: true,
+            prepareSupportDefaultBehavior: 1,
+            honorsChangeAnnotations: true,
+          },
+          documentLink: { dynamicRegistration: true, tooltipSupport: true },
+          typeDefinition: { dynamicRegistration: true, linkSupport: true },
+          implementation: { dynamicRegistration: true, linkSupport: true },
+          colorProvider: { dynamicRegistration: true },
+          declaration: { dynamicRegistration: true, linkSupport: true },
+          selectionRange: { dynamicRegistration: true },
+          callHierarchy: { dynamicRegistration: true },
+          semanticTokens: {
+            dynamicRegistration: true,
+            tokenTypes: [
+              "namespace",
+              "type",
+              "class",
+              "enum",
+              "interface",
+              "struct",
+              "typeParameter",
+              "parameter",
+              "variable",
+              "property",
+              "enumMember",
+              "event",
+              "function",
+              "method",
+              "macro",
+              "keyword",
+              "modifier",
+              "comment",
+              "string",
+              "number",
+              "regexp",
+              "operator",
+              "decorator",
+            ],
+            tokenModifiers: [
+              "declaration",
+              "definition",
+              "readonly",
+              "static",
+              "deprecated",
+              "abstract",
+              "async",
+              "modification",
+              "documentation",
+              "defaultLibrary",
+            ],
+            formats: ["relative"],
+            requests: { range: true, full: { delta: true } },
+            multilineTokenSupport: false,
+            overlappingTokenSupport: false,
+            serverCancelSupport: true,
+            augmentsSyntaxTokens: true,
+          },
+          typeHierarchy: { dynamicRegistration: true },
+          inlineValue: { dynamicRegistration: true },
+          diagnostic: { dynamicRegistration: true, relatedDocumentSupport: false },
+        },
+        general: {
+          staleRequestSupport: {
+            cancel: true,
+            retryOnContentModified: [
+              "textDocument/semanticTokens/full",
+              "textDocument/semanticTokens/range",
+              "textDocument/semanticTokens/full/delta",
+            ],
+          },
+          regularExpressions: { engine: "ECMAScript", version: "ES2020" },
+          positionEncodings: ["utf-16"],
+        },
+      }
+
+      // Set Java-specific initialization options
+      initialize.initializationOptions = {
+        bundles: [],
+        settings: {
+          java: {
+            home: null,
+            jdt: {
+              ls: {
+                java: { home: null },
+                vmargs:
+                  "-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -Dsun.zip.disableMemoryMapping=true -Xmx3G -Xms100m -Xlog:disable -Declipse.p2.unsignedPolicy=allow",
+                lombokSupport: { enabled: true },
+                protobufSupport: { enabled: false },
+                androidSupport: { enabled: false },
+              },
+            },
+            errors: {
+              incompleteClasspath: { severity: "ignore" },
+              unlikelyArgumentCheck: { severity: "ignore" },
+            },
+            problems: {
+              unlikelyArgumentType: "ignore",
+              unlikelyEqualsArgumentType: "ignore",
+            },
+            configuration: {
+              checkProjectSettingsExclusions: false,
+              updateBuildConfiguration: "interactive",
+              maven: {
+                userSettings: null,
+                globalSettings: null,
+                notCoveredPluginExecutionSeverity: "ignore",
+                defaultMojoExecutionAction: "ignore",
+                offline: { enabled: true },
+              },
+              workspaceCacheLimit: 1000,
+              runtimes: [{ name: "JavaSE-21", path: jreHomePath, default: true }],
+            },
+            trace: { server: "off" },
+            import: {
+              maven: {
+                enabled: true,
+                offline: { enabled: false },
+                disableTestClasspathFlag: true,
+              },
+              gradle: {
+                enabled: true,
+                wrapper: { enabled: true },
+                version: null,
+                home: null,
+                java: { home: jreHomePath },
+                offline: { enabled: false },
+                arguments: null,
+                jvmArguments: null,
+                user: { home: null },
+                annotationProcessing: { enabled: false },
+              },
+              exclusions: ["**/node_modules/**", "**/.metadata/**", "**/archetype-resources/**", "**/META-INF/maven/**"],
+              generatesMetadataFilesAtProjectRoot: false,
+            },
+            maven: { downloadSources: false, updateSnapshots: false },
+            eclipse: { downloadSources: false },
+            signatureHelp: { enabled: false, description: { enabled: false } },
+            implementationsCodeLens: { enabled: false },
+            format: {
+              enabled: false,
+              settings: { url: null, profile: null },
+              comments: { enabled: false },
+              onType: { enabled: false },
+              insertSpaces: true,
+              tabSize: 4,
+            },
+            saveActions: { organizeImports: false },
+            project: {
+              referencedLibraries: ["lib/**/*.jar"],
+              importOnFirstTimeStartup: "automatic",
+              importHint: false,
+              resourceFilters: ["node_modules", "\\.git"],
+              encoding: "ignore",
+              exportJar: { targetPath: "${workspaceFolder}/${workspaceFolderBasename}.jar" },
+            },
+            contentProvider: { preferred: null },
+            autobuild: { enabled: true },
+            maxConcurrentBuilds: 8,
+            selectionRange: { enabled: false },
+            showBuildStatusOnStart: { enabled: "off" },
+            server: { launchMode: "Standard" },
+            sources: { organizeImports: { starThreshold: 99, staticStarThreshold: 99 } },
+            imports: { gradle: { wrapper: { checksums: [] } } },
+            templates: { fileHeader: [], typeComment: [] },
+            references: { includeAccessors: false, includeDecompiledSources: false },
+            typeHierarchy: { lazyLoad: true },
+            settings: { url: null },
+            symbols: { includeSourceMethodDeclarations: true },
+            inlayHints: { parameterNames: { enabled: "none", exclusions: [] } },
+            codeAction: { sortMembers: { avoidVolatileChanges: true } },
+            compile: {
+              nullAnalysis: { mode: "disabled" },
+              unlikelyArgumentType: "ignore",
+              unlikelyEqualsArgumentType: "ignore",
+            },
+            completion: {
+              enabled: true,
+              overwrite: false,
+              guessMethodArguments: false,
+              filteredTypes: [],
+              favoriteStaticMembers: [],
+              importOrder: [],
+            },
+            progressReports: { enabled: false },
+            sharedIndexes: { enabled: "auto", location: "" },
+            silentNotification: true,
+            dependency: {
+              showMembers: false,
+              syncWithFolderExplorer: false,
+              autoRefresh: false,
+              refreshDelay: 2000,
+              packagePresentation: "flat",
+            },
+            help: { firstView: "auto", showReleaseNotes: false, collectErrorLog: false },
+            test: { defaultConfig: "", config: {} },
+          },
+        },
+      }
+
+      const do_nothing = (_params: any): void => {}
+
+      // Register notification handlers for JDTLS
+      connection.onNotification("window/logMessage", (params: any) => {
+        log.info("JDTLS window/logMessage", params)
+      })
+      connection.onNotification("$/progress", do_nothing)
+      connection.onNotification("language/actionableNotification", do_nothing)
+      connection.onRequest("workspace/executeClientCommand", do_nothing)
+
+      return {
+        ready: () =>
+          new Promise<void>((resolve) => {
+            connection.onNotification("language/status", (params: any) => {
+              if (params.type === "ServiceReady" && params.message === "ServiceReady") {
+                resolve()
+              }
+            })
+          }),
       }
     },
   }

@@ -6,6 +6,7 @@ import DESCRIPTION from "./lsp.txt"
 import { Instance } from "../project/instance"
 import { pathToFileURL } from "url"
 import { assertExternalDirectory } from "./external-directory"
+import { Filesystem } from "../util/filesystem"
 
 const operations = [
   "goToDefinition",
@@ -91,6 +92,53 @@ export const LspTool = Tool.define("lsp", {
       title,
       metadata: { result },
       output,
+    }
+  },
+})
+
+export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
+  description: "Get LSP diagnostics (errors and warnings) for a file. This tool checks the file for compilation errors, type errors, and other issues reported by the language server.",
+  parameters: z.object({
+    filePath: z.string().describe("The absolute or relative path to the file to check for diagnostics"),
+  }),
+  execute: async (args, ctx) => {
+    const filepath = path.isAbsolute(args.filePath) ? args.filePath : path.join(Instance.directory, args.filePath)
+    await assertExternalDirectory(ctx, filepath)
+
+    await ctx.ask({
+      permission: "lsp",
+      patterns: ["*"],
+      always: ["*"],
+      metadata: {},
+    })
+
+    const exists = await Bun.file(filepath).exists()
+    if (!exists) {
+      throw new Error(`File not found: ${filepath}`)
+    }
+
+    const relPath = path.relative(Instance.worktree, filepath)
+    const title = `diagnostics ${relPath}`
+
+    await LSP.touchFile(filepath, true)
+    const diagnostics = await LSP.diagnostics()
+    const normalizedFilepath = Filesystem.normalizePath(filepath)
+
+    let output = ""
+
+    const issues = diagnostics[normalizedFilepath] ?? []
+    if (issues.length > 0) {
+      output = `LSP diagnostics detected in this file:\n<diagnostics file="${filepath}">\n${issues.map(LSP.Diagnostic.pretty).join("\n")}\n</diagnostics>`
+    }
+
+    if (output === "") {
+      output = "No LSP errors detected."
+    }
+
+    return {
+      title,
+      metadata: { diagnostics },
+      output: output.trim(),
     }
   },
 })
