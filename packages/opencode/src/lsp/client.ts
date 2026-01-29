@@ -3,7 +3,7 @@ import { Bus } from "@/bus"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node"
-import type { Diagnostic as VSCodeDiagnostic } from "vscode-languageserver-types"
+import type { Diagnostic as VSCodeDiagnostic, DocumentSymbol as VSCodeDocumentSymbol } from "vscode-languageserver-types"
 import { Log } from "../util/log"
 import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
@@ -21,6 +21,8 @@ export namespace LSPClient {
   export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
   export type Diagnostic = VSCodeDiagnostic
+
+  export type DocumentSymbol = VSCodeDocumentSymbol & { overloadIdx?: number }
 
   export const InitializeError = NamedError.create(
     "LSPInitializeError",
@@ -65,14 +67,14 @@ export namespace LSPClient {
     
     connection.onNotification("textDocument/publishDiagnostics", (params) => {
       const filePath = Filesystem.normalizePath(fileURLToPath(params.uri))
-      l.info("textDocument/publishDiagnostics", {
+      l.debug("textDocument/publishDiagnostics", {
         path: filePath,
         count: params.diagnostics.length,
       })
       publishDiagnostics(filePath,params.diagnostics)
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {
-      l.info("window/workDoneProgress/create", params)
+      l.debug("window/workDoneProgress/create", params)
       return null
     })
     connection.onRequest("workspace/configuration", async () => {
@@ -126,10 +128,17 @@ export namespace LSPClient {
     }
 
     // Call setup hook before initialize - allows customizing connection handlers and capabilities
-    let methods: {diagnostics?:(input: { path: string }) => Promise<Diagnostic[]>, ready?: () => Promise<void>} = {};
+    let methods: {
+      diagnostics?: (input: { path: string }) => Promise<Diagnostic[]>
+      documentSymbol?: (input: { path: string; url?: URL }) => Promise<DocumentSymbol[]>
+      ready?: () => Promise<void>
+    } = {}
     if (input.info.setup) {
       methods = await input.info.setup({ connection, initialize, getClients: input.getClients })
     }
+    const diagnosticsFromLSP = methods.diagnostics
+    const documentSymbolFromLSP = methods.documentSymbol
+    const ready = methods.ready
 
     l.info("sending initialize")
     await withTimeout(
@@ -153,9 +162,7 @@ export namespace LSPClient {
       })
     }
 
-    if(methods.ready){
-      await methods.ready?.()
-    }
+    await ready?.();
 
     const files: {
       [path: string]: number
@@ -231,6 +238,53 @@ export namespace LSPClient {
           return
         },
       },
+      async openFile(input: { path: string}) {
+        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
+        if (files[input.path] !== undefined) return
+
+        const file = Bun.file(input.path)
+        const text = await file.text()
+        const extension = path.extname(input.path)
+        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+
+        diagnostics.delete(input.path)
+        await connection.sendNotification("textDocument/didOpen", {
+          textDocument: {
+            uri: pathToFileURL(input.path).href,
+            languageId,
+            version: 0,
+            text,
+          },
+        })
+        files[input.path] = 0
+      },
+      async closeFile(input: { path: string }) {
+        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
+        if (files[input.path] === undefined) return
+
+        await connection.sendNotification("textDocument/didClose", {
+          textDocument: {
+            uri: pathToFileURL(input.path).href,
+          },
+        })
+        delete files[input.path]
+        diagnostics.delete(input.path)
+      },
+      async documentSymbol(input: { path: string; }) {
+        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
+        if (documentSymbolFromLSP) {
+          return documentSymbolFromLSP(input)
+        }
+        const rootSymbols = await connection
+          .sendRequest("textDocument/documentSymbol", {
+            textDocument: {
+              uri: pathToFileURL(input.path).href,
+            },
+          })
+          .then((r) => (Array.isArray(r) ? r : []) as LSPClient.DocumentSymbol[])
+          .catch(() => [])
+        return rootSymbols
+      },
       get diagnostics() {
         return diagnostics
       },
@@ -254,11 +308,9 @@ export namespace LSPClient {
                 }, DIAGNOSTICS_DEBOUNCE_MS)
               }
             })
-            if(methods.diagnostics){
-              methods.diagnostics({ path: normalizedPath }).then(diagnosticsInfo => {
-                publishDiagnostics(normalizedPath, diagnosticsInfo)
-              })
-            }
+            diagnosticsFromLSP?.({ path: normalizedPath }).then(diagnosticsInfo => {
+              publishDiagnostics(normalizedPath, diagnosticsInfo)
+            })
           }),
           waitInput.timeout ?? 3000,
         )

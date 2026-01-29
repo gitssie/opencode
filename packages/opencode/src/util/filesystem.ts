@@ -65,6 +65,14 @@ export namespace Filesystem {
     }
   }
 
+  export async function upLast(options: { targets: string[]; start: string; stop?: string }) {
+    let last: string | undefined
+    for await (const found of up(options)) {
+      last = found
+    }
+    return last
+  }
+
   export async function globUp(pattern: string, start: string, stop?: string) {
     let current = start
     const result = []

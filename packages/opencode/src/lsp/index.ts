@@ -10,12 +10,21 @@ import { Config } from "../config/config"
 import { spawn } from "child_process"
 import { Instance } from "../project/instance"
 import { Flag } from "@/flag/flag"
+import { Index } from "./symbols"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
 
   export const Event = {
-    Updated: BusEvent.define("lsp.updated", z.object({})),
+    Updated: BusEvent.define(
+      "lsp.updated",
+      z.object({
+        serverID: z.string(),
+        root: z.string(),
+        client: z.any(),
+        extensions: z.array(z.string()),
+      }),
+    ),
   }
 
   export const Range = z
@@ -48,7 +57,18 @@ export namespace LSP {
     })
   export type Symbol = z.infer<typeof Symbol>
 
-  export const DocumentSymbol = z
+  export interface DocumentSymbol {
+    name: string
+    detail?: string
+    kind: number
+    range: Range
+    selectionRange: Range
+    overloadIdx?: number
+    body?: string
+    children?: DocumentSymbol[]
+  }
+
+  export const DocumentSymbol: z.ZodType<DocumentSymbol> = z
     .object({
       name: z.string(),
       detail: z.string().optional(),
@@ -59,7 +79,6 @@ export namespace LSP {
     .meta({
       ref: "DocumentSymbol",
     })
-  export type DocumentSymbol = z.infer<typeof DocumentSymbol>
 
   const filterExperimentalServers = (servers: Record<string, LSPServer.Info>) => {
     if (Flag.OPENCODE_EXPERIMENTAL_LSP_TY) {
@@ -143,7 +162,25 @@ export namespace LSP {
     },
   )
 
+  const indexes = Instance.state(
+    async () => {
+      const indexes = new Map<string, Index.Info>();
+      const s = await state();
+      for (const server of Object.values(s.servers)) {
+        const index = await Index.create({ serverID: server.id, getClients, hasClients });
+        indexes.set(server.id, index)
+      }
+      return {
+        indexes
+      }
+    },
+    async (state) => {
+      await Promise.all(state.indexes.values().map((index) => index.shutdown()))
+    }
+  );
+
   export async function init() {
+    indexes()
     return state()
   }
 
@@ -172,6 +209,12 @@ export namespace LSP {
       }
       return result
     })
+  }
+
+  async function getRoot(server: LSPServer.Info, file: string): Promise<string | undefined> {
+    const root = await server.root(file)
+    if (!root) return undefined
+    return path.isAbsolute(root) ? root : path.join(Instance.directory, root)
   }
 
   async function getClients(file: string) {
@@ -226,9 +269,11 @@ export namespace LSP {
     for (const server of Object.values(s.servers)) {
       if (server.extensions.length && !server.extensions.includes(extension)) continue
 
-      const root = await server.root(file)
+      const root = await getRoot(server, file)
       if (!root) continue
-      if (s.broken.has(root + server.id)) continue
+     
+      const key = root + server.id
+      if (s.broken.has(key)) continue
 
       const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
       if (match) {
@@ -236,28 +281,22 @@ export namespace LSP {
         continue
       }
 
-      const inflight = s.spawning.get(root + server.id)
-      if (inflight) {
-        const client = await inflight
-        if (!client) continue
-        result.push(client)
-        continue
+      let inflight = s.spawning.get(key)
+      if (!inflight) {
+        inflight = schedule(server, root, key)
+        s.spawning.set(key, inflight)
+        inflight.finally(() => {
+          if (s.spawning.get(key) === inflight) {
+            s.spawning.delete(key)
+          }
+        })
       }
 
-      const task = schedule(server, root, root + server.id)
-      s.spawning.set(root + server.id, task)
-
-      task.finally(() => {
-        if (s.spawning.get(root + server.id) === task) {
-          s.spawning.delete(root + server.id)
-        }
-      })
-
-      const client = await task
+      const client = await inflight
       if (!client) continue
-
+      log.info("lsp server root found", { serverID: server.id, root, file })
       result.push(client)
-      Bus.publish(Event.Updated, {})
+      Bus.publish(Event.Updated, { serverID: server.id, root, client, extensions: server.extensions })
     }
 
     return result
@@ -268,12 +307,35 @@ export namespace LSP {
     const extension = path.parse(file).ext || file
     for (const server of Object.values(s.servers)) {
       if (server.extensions.length && !server.extensions.includes(extension)) continue
-      const root = await server.root(file)
+      const root = await getRoot(server, file)
       if (!root) continue
       if (s.broken.has(root + server.id)) continue
       return true
     }
     return false
+  }
+
+  export async function openFile(input: { path: string }) {
+    const clients = await getClients(input.path)
+    await Promise.all(clients.map((client) => client.openFile(input))).catch((err) => {
+      log.error("failed to open file", { err, file: input.path })
+    })
+  }
+
+  export async function closeFile(input: { path: string }) {
+    const clients = await getClients(input.path)
+    await Promise.all(clients.map((client) => client.closeFile(input))).catch((err) => {
+      log.error("failed to close file", { err, file: input.path })
+    })
+  }
+
+  export async function withFile<T>(input: { path: string }, fn: () => Promise<T>): Promise<T> {
+    await openFile(input)
+    try {
+      return await fn()
+    } finally {
+      await closeFile(input)
+    }
   }
 
   export async function touchFile(input: string, waitForDiagnostics?: boolean, timeout?: number) {
@@ -370,17 +432,19 @@ export namespace LSP {
     ).then((result) => result.flat() as LSP.Symbol[])
   }
 
-  export async function documentSymbol(uri: string) {
-    const file = new URL(uri).pathname
-    return run(file, (client) =>
-      client.connection
+  export async function documentSymbol(file: string) {
+    const uri = pathToFileURL(file).href
+    return run(file, (client) => {
+      return client.connection
         .sendRequest("textDocument/documentSymbol", {
           textDocument: {
             uri,
           },
+        }).catch((err) => {
+          log.error("documentSymbol error", { serverID: client.serverID, error: err })
+          return []
         })
-        .catch(() => []),
-    )
+    })
       .then((result) => result.flat() as (LSP.DocumentSymbol | LSP.Symbol)[])
       .then((result) => result.filter(Boolean))
   }
@@ -484,4 +548,55 @@ export namespace LSP {
       return `${severity} [${line}:${col}] ${diagnostic.message}`
     }
   }
+
+  export async function rebuildIndex(rebuild?: boolean): Promise<{ indexed: number; skipped: number; errors: number }> {
+    const s = await state()
+    const is = await indexes()
+    const extensions = new Set<string>()
+
+    for (const server of Object.values(s.servers)) {
+      for (const ext of server.extensions) {
+        extensions.add(ext)
+      }
+    }
+    return Index.buildIndex({
+      indexes: is.indexes,
+      extensions,
+      rebuild,
+      getSymbols
+    })
+  }
+  
+  export async function searchSymbols(opts: { namePathRegex: string; includeKinds?: number[]; excludeKinds?: number[]; relativePathRegex?: string; includeBody?: boolean }): Promise<LSPClient.DocumentSymbol[]> {
+    const s = await indexes()
+    const results: LSPClient.DocumentSymbol[] = []
+   
+    for (const index of s.indexes.values()) {
+      const backendResults = await index.searchSymbols(opts)
+      results.push(...backendResults)
+    }
+    return results
+  }
+
+  export async function getSymbols(file: string): Promise<Map<string, LSPClient.DocumentSymbol[]>> {
+    const clients = await getClients(file)
+    const result = new Map<string, LSPClient.DocumentSymbol[]>()
+    const input = { path: file };
+
+    await openFile(input)
+    try {
+      await Promise.all(
+        clients.map(async (client) => {
+          const symbols = await client.documentSymbol(input)
+          result.set(client.serverID, symbols.filter(Boolean))
+        }),
+      )
+    } finally {
+      await closeFile(input)
+    }
+
+    return result
+  }
+
+  export const pretty = Index.pretty
 }

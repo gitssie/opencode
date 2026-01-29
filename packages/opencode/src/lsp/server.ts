@@ -1,6 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import path from "path"
-import os from "os"
 import { Global } from "../global"
 import { Log } from "../util/log"
 import { BunProc } from "../bun"
@@ -63,7 +62,11 @@ export namespace LSPServer {
       connection: MessageConnection
       initialize: Record<string, any>
       getClients: (file: string) => Promise<LSPClient.Info[]>
-    }): Promise<{diagnostics?:(input: { path: string }) => Promise<LSPClient.Diagnostic[]>, ready?: () => Promise<void>}>
+    }): Promise<{
+      diagnostics?: (input: { path: string }) => Promise<LSPClient.Diagnostic[]>
+      documentSymbol?: (input: { path: string; url?: URL }) => Promise<LSPClient.DocumentSymbol[]>
+      ready?: () => Promise<void>
+    }>
   }
 
   export const Deno: Info = {
@@ -81,6 +84,7 @@ export namespace LSPServer {
     },
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"],
     async spawn(root) {
+      log.info("spawn deno", { root })
       const deno = Bun.which("deno")
       if (!deno) {
         log.info("deno not found, please install deno first")
@@ -103,11 +107,14 @@ export namespace LSPServer {
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
       const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
-      log.info("typescript server", { tsserver })
-      if (!tsserver) return
-
+      if (!tsserver) {
+        log.info("typescript server not found", {root, tsserver })
+        return
+      }
       // Try to find @vue/typescript-plugin for Vue file support (installed with @vue/language-server in Global.Path.bin)
       const vuePluginPath = await Bun.resolve("@vue/typescript-plugin", Global.Path.bin).catch(() => {})
+  
+      log.info("typescript server", {root, tsserver ,vuePluginPath})
 
       const proc = spawn(BunProc.which(), ["x", "typescript-language-server", "--stdio"], {
         cwd: root,
@@ -224,7 +231,7 @@ export namespace LSPServer {
       return {
         ready: () =>
           new Promise<void>((resolve) => {
-            const timeout = setTimeout(() => resolve(), 5000)
+            const timeout = setTimeout(() => resolve(), 15000)
             connection.onNotification("experimental/serverStatus", (params: any) => {
               if (params.quiescent === true) {
                 clearTimeout(timeout)
@@ -279,6 +286,7 @@ export namespace LSPServer {
 
       // Find TypeScript SDK path for Vue
       const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
+      log.info("spawn vue", { root, tsserver })
       return {
         process: proc,
         initialization: {
@@ -381,11 +389,12 @@ export namespace LSPServer {
 
       // Register tsserver/request notification handler for Vue hybrid mode
       connection.onNotification("tsserver/request", async (params: any[]) => {
+         log.debug("tsserver/request", { params })
+
         if (params && params.length > 2) {
           const requestId = params[0]
           const method = params[1]
           const methodParams = params[2]
-          log.debug("tsserver/request", { requestId, method,methodParams })
 
           const file = methodParams.file ?? ""
           // Handle _vue:projectInfo specially - find tsconfig.json
@@ -518,6 +527,7 @@ export namespace LSPServer {
     ]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
     async spawn(root) {
+      log.info("spawn oxlint", { root })
       const ext = process.platform === "win32" ? ".cmd" : ""
 
       const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
@@ -607,6 +617,7 @@ export namespace LSPServer {
       ".html",
     ],
     async spawn(root) {
+      log.info("spawn biome", { root })
       const localBin = path.join(root, "node_modules", ".bin", "biome")
       let bin: string | undefined
       if (await Bun.file(localBin).exists()) bin = localBin
@@ -647,6 +658,7 @@ export namespace LSPServer {
     },
     extensions: [".go"],
     async spawn(root) {
+      log.info("spawn gopls", { root })
       let bin = Bun.which("gopls", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -685,6 +697,7 @@ export namespace LSPServer {
     root: NearestRoot(["Gemfile"]),
     extensions: [".rb", ".rake", ".gemspec", ".ru"],
     async spawn(root) {
+      log.info("spawn rubocop", { root })
       let bin = Bun.which("rubocop", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -734,6 +747,7 @@ export namespace LSPServer {
       "pyrightconfig.json",
     ]),
     async spawn(root) {
+      log.info("spawn ty", { root })
       if (!Flag.OPENCODE_EXPERIMENTAL_LSP_TY) {
         return undefined
       }
@@ -790,6 +804,7 @@ export namespace LSPServer {
     extensions: [".py", ".pyi"],
     root: NearestRoot(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]),
     async spawn(root) {
+      log.info("spawn pyright", { root })
       let binary = Bun.which("pyright-langserver")
       const args = []
       if (!binary) {
@@ -844,6 +859,7 @@ export namespace LSPServer {
     extensions: [".ex", ".exs"],
     root: NearestRoot(["mix.exs", "mix.lock"]),
     async spawn(root) {
+      log.info("spawn elixir-ls", { root })
       let binary = Bun.which("elixir-ls")
       if (!binary) {
         const elixirLsPath = path.join(Global.Path.bin, "elixir-ls")
@@ -906,6 +922,7 @@ export namespace LSPServer {
     extensions: [".zig", ".zon"],
     root: NearestRoot(["build.zig"]),
     async spawn(root) {
+      log.info("spawn zls", { root })
       let bin = Bun.which("zls", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -1018,6 +1035,7 @@ export namespace LSPServer {
     root: NearestRoot([".sln", ".csproj", "global.json"]),
     extensions: [".cs"],
     async spawn(root) {
+      log.info("spawn csharp-ls", { root })
       let bin = Bun.which("csharp-ls", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -1058,6 +1076,7 @@ export namespace LSPServer {
     root: NearestRoot([".sln", ".fsproj", "global.json"]),
     extensions: [".fs", ".fsi", ".fsx", ".fsscript"],
     async spawn(root) {
+      log.info("spawn fsautocomplete", { root })
       let bin = Bun.which("fsautocomplete", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -1098,6 +1117,7 @@ export namespace LSPServer {
     extensions: [".swift", ".objc", "objcpp"],
     root: NearestRoot(["Package.swift", "*.xcodeproj", "*.xcworkspace"]),
     async spawn(root) {
+      log.info("spawn sourcekit-lsp", { root })
       // Check if sourcekit-lsp is available in the PATH
       // This is installed with the Swift toolchain
       const sourcekit = Bun.which("sourcekit-lsp")
@@ -1160,6 +1180,7 @@ export namespace LSPServer {
     },
     extensions: [".rs"],
     async spawn(root) {
+      log.info("spawn rust-analyzer", { root })
       const bin = Bun.which("rust-analyzer")
       if (!bin) {
         log.info("rust-analyzer not found in path, please install it")
@@ -1178,6 +1199,7 @@ export namespace LSPServer {
     root: NearestRoot(["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "Makefile"]),
     extensions: [".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".h++"],
     async spawn(root) {
+      log.info("spawn clangd", { root })
       const args = ["--background-index", "--clang-tidy"]
       const fromPath = Bun.which("clangd")
       if (fromPath) {
@@ -1324,6 +1346,7 @@ export namespace LSPServer {
     extensions: [".svelte"],
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
+      log.info("spawn svelte", { root })
       let binary = Bun.which("svelteserver")
       const args: string[] = []
       if (!binary) {
@@ -1364,6 +1387,7 @@ export namespace LSPServer {
     extensions: [".astro"],
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
+      log.info("spawn astro", { root })
       const tsserver = await Bun.resolve("typescript/lib/tsserver.js", root).catch(() => {})
       if (!tsserver) {
         log.info("typescript not found, required for Astro language server")
@@ -1412,9 +1436,22 @@ export namespace LSPServer {
 
   export const JDTLS: Info = {
     id: "jdtls",
-    root: NearestRoot(["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"]),
+    // For multi-module Maven/Gradle projects, find the topmost project root within workspace
+    root: async (file) => {
+      const markers = ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"]
+
+      // Search upward from file to find topmost root within workspace
+      const found = await Filesystem.upLast({
+        targets: markers,
+        start: path.dirname(file),
+        stop: Instance.directory,
+      })
+      const root = found ? Filesystem.normalizePath(path.dirname(found)) : undefined
+      return root
+    },
     extensions: [".java"],
     async spawn(root) {
+      log.info("spawn jdtls with root dir", { root })
       // Runtime dependency configuration based on platform
       const platform = process.platform
       const arch = process.arch
@@ -1944,6 +1981,54 @@ export namespace LSPServer {
               }
             })
           }),
+        async documentSymbol(input: { path: string; url?: URL }) {
+          input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
+          const rootSymbols = await connection
+            .sendRequest("textDocument/documentSymbol", {
+              textDocument: {
+                uri: (input.url || pathToFileURL(input.path)).href,
+              },
+            })
+            .then((r) => (Array.isArray(r) ? r : []) as LSPClient.DocumentSymbol[])
+            .catch(() => [])
+
+          const fixName = (symbols: LSPClient.DocumentSymbol[]) => {
+            for (const symbol of symbols) {
+              if (symbol.name.includes("(")) {
+                symbol.detail = symbol.name
+                symbol.name = symbol.name.slice(0, symbol.name.indexOf("("))
+              }
+              if (symbol.children) {
+                fixName(symbol.children)
+              }
+            }
+          }
+
+          const assignOverloadIdx = (symbols: LSPClient.DocumentSymbol[]) => {
+            const totalCounts: Record<string, number> = {}
+            const counts: Record<string, number> = {}
+
+            for (const symbol of symbols) {
+              totalCounts[symbol.name] = (totalCounts[symbol.name] || 0) + 1
+              counts[symbol.name] = 0
+            }
+
+            for (const symbol of symbols) {
+              if (totalCounts[symbol.name] > 1) {
+                symbol.overloadIdx = counts[symbol.name]
+                counts[symbol.name]++
+              }
+              if (symbol.children) {
+                assignOverloadIdx(symbol.children)
+              }
+            }
+          }
+
+          fixName(rootSymbols)
+          assignOverloadIdx(rootSymbols)
+
+          return rootSymbols
+        },
       }
     },
   }
@@ -1965,6 +2050,7 @@ export namespace LSPServer {
       return NearestRoot(["pom.xml"])(file)
     },
     async spawn(root) {
+      log.info("spawn kotlin-ls", { root })
       const distPath = path.join(Global.Path.bin, "kotlin-ls")
       const launcherScript =
         process.platform === "win32" ? path.join(distPath, "kotlin-lsp.cmd") : path.join(distPath, "kotlin-lsp.sh")
@@ -2044,6 +2130,7 @@ export namespace LSPServer {
     extensions: [".yaml", ".yml"],
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
+      log.info("spawn yaml-ls", { root })
       let binary = Bun.which("yaml-language-server")
       const args: string[] = []
       if (!binary) {
@@ -2100,6 +2187,7 @@ export namespace LSPServer {
     ]),
     extensions: [".lua"],
     async spawn(root) {
+      log.info("spawn lua-ls", { root })
       let bin = Bun.which("lua-language-server", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -2232,6 +2320,7 @@ export namespace LSPServer {
     extensions: [".php"],
     root: NearestRoot(["composer.json", "composer.lock", ".php-version"]),
     async spawn(root) {
+      log.info("spawn php-intelephense", { root })
       let binary = Bun.which("intelephense")
       const args: string[] = []
       if (!binary) {
@@ -2276,6 +2365,7 @@ export namespace LSPServer {
     extensions: [".prisma"],
     root: NearestRoot(["schema.prisma", "prisma/schema.prisma", "prisma"], ["package.json"]),
     async spawn(root) {
+      log.info("spawn prisma", { root })
       const prisma = Bun.which("prisma")
       if (!prisma) {
         log.info("prisma not found, please install prisma")
@@ -2294,6 +2384,7 @@ export namespace LSPServer {
     extensions: [".dart"],
     root: NearestRoot(["pubspec.yaml", "analysis_options.yaml"]),
     async spawn(root) {
+      log.info("spawn dart", { root })
       const dart = Bun.which("dart")
       if (!dart) {
         log.info("dart not found, please install dart first")
@@ -2312,6 +2403,7 @@ export namespace LSPServer {
     extensions: [".ml", ".mli"],
     root: NearestRoot(["dune-project", "dune-workspace", ".merlin", "opam"]),
     async spawn(root) {
+      log.info("spawn ocamllsp", { root })
       const bin = Bun.which("ocamllsp")
       if (!bin) {
         log.info("ocamllsp not found, please install ocaml-lsp-server")
@@ -2329,6 +2421,7 @@ export namespace LSPServer {
     extensions: [".sh", ".bash", ".zsh", ".ksh"],
     root: async () => Instance.directory,
     async spawn(root) {
+      log.info("spawn bash-ls", { root })
       let binary = Bun.which("bash-language-server")
       const args: string[] = []
       if (!binary) {
@@ -2368,6 +2461,7 @@ export namespace LSPServer {
     extensions: [".tf", ".tfvars"],
     root: NearestRoot([".terraform.lock.hcl", "terraform.tfstate", "*.tf"]),
     async spawn(root) {
+      log.info("spawn terraform-ls", { root })
       let bin = Bun.which("terraform-ls", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -2458,6 +2552,7 @@ export namespace LSPServer {
     extensions: [".tex", ".bib"],
     root: NearestRoot([".latexmkrc", "latexmkrc", ".texlabroot", "texlabroot"]),
     async spawn(root) {
+      log.info("spawn texlab", { root })
       let bin = Bun.which("texlab", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -2548,6 +2643,7 @@ export namespace LSPServer {
     extensions: [".dockerfile", "Dockerfile"],
     root: async () => Instance.directory,
     async spawn(root) {
+      log.info("spawn dockerfile-ls", { root })
       let binary = Bun.which("docker-langserver")
       const args: string[] = []
       if (!binary) {
@@ -2587,6 +2683,7 @@ export namespace LSPServer {
     extensions: [".gleam"],
     root: NearestRoot(["gleam.toml"]),
     async spawn(root) {
+      log.info("spawn gleam", { root })
       const gleam = Bun.which("gleam")
       if (!gleam) {
         log.info("gleam not found, please install gleam first")
@@ -2605,6 +2702,7 @@ export namespace LSPServer {
     extensions: [".clj", ".cljs", ".cljc", ".edn"],
     root: NearestRoot(["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]),
     async spawn(root) {
+      log.info("spawn clojure-lsp", { root })
       let bin = Bun.which("clojure-lsp")
       if (!bin && process.platform === "win32") {
         bin = Bun.which("clojure-lsp.exe")
@@ -2636,6 +2734,7 @@ export namespace LSPServer {
       return Instance.directory
     },
     async spawn(root) {
+      log.info("spawn nixd", { root })
       const nixd = Bun.which("nixd")
       if (!nixd) {
         log.info("nixd not found, please install nixd first")
@@ -2657,6 +2756,7 @@ export namespace LSPServer {
     extensions: [".typ", ".typc"],
     root: NearestRoot(["typst.toml"]),
     async spawn(root) {
+      log.info("spawn tinymist", { root })
       let bin = Bun.which("tinymist", {
         PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
       })
@@ -2751,6 +2851,7 @@ export namespace LSPServer {
     extensions: [".hs", ".lhs"],
     root: NearestRoot(["stack.yaml", "cabal.project", "hie.yaml", "*.cabal"]),
     async spawn(root) {
+      log.info("spawn haskell-language-server", { root })
       const bin = Bun.which("haskell-language-server-wrapper")
       if (!bin) {
         log.info("haskell-language-server-wrapper not found, please install haskell-language-server")
