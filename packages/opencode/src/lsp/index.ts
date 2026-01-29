@@ -294,7 +294,7 @@ export namespace LSP {
 
       const client = await inflight
       if (!client) continue
-      log.info("lsp server root found", { serverID: server.id, root, file })
+      
       result.push(client)
       Bus.publish(Event.Updated, { serverID: server.id, root, client, extensions: server.extensions })
     }
