@@ -461,7 +461,7 @@ export namespace LSPServer {
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      const eslint = await Bun.resolve("eslint", Instance.directory).catch(() => {})
+      const eslint = await Bun.resolve("eslint", root).catch(() => {})
       if (!eslint) return
       log.info("spawning eslint server")
       const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
@@ -622,17 +622,40 @@ export namespace LSPServer {
       let bin: string | undefined
       if (await Bun.file(localBin).exists()) bin = localBin
       if (!bin) {
-        const found = Bun.which("biome")
+        const found = Bun.which("biome", {
+          PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
+        })
         if (found) bin = found
       }
 
       let args = ["lsp-proxy", "--stdio"]
 
       if (!bin) {
+        // Try to resolve from project dependencies
         const resolved = await Bun.resolve("biome", root).catch(() => undefined)
-        if (!resolved) return
-        bin = BunProc.which()
-        args = ["x", "biome", "lsp-proxy", "--stdio"]
+        if (resolved) {
+          bin = BunProc.which()
+          args = ["x", "biome", "lsp-proxy", "--stdio"]
+        } else {
+          // Auto-install biome to Global.Path.bin
+          if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
+          log.info("installing biome to opencode bin")
+          const js = path.join(Global.Path.bin, "node_modules", "@biomejs", "biome", "bin", "biome")
+          if (!(await Bun.file(js).exists())) {
+            await Bun.spawn([BunProc.which(), "install", "@biomejs/biome"], {
+              cwd: Global.Path.bin,
+              env: {
+                ...process.env,
+                BUN_BE_BUN: "1",
+              },
+              stdout: "pipe",
+              stderr: "pipe",
+            }).exited
+            log.info("installed biome", { path: js })
+          }
+          bin = BunProc.which()
+          args = ["run", js, "lsp-proxy", "--stdio"]
+        }
       }
 
       const proc = spawn(bin, args, {
@@ -642,7 +665,6 @@ export namespace LSPServer {
           BUN_BE_BUN: "1",
         },
       })
-
       return {
         process: proc,
       }

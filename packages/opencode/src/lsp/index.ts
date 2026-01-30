@@ -11,6 +11,7 @@ import { spawn } from "child_process"
 import { Instance } from "../project/instance"
 import { Flag } from "@/flag/flag"
 import { Index } from "./symbols"
+import { Filesystem } from "@/util/filesystem"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
@@ -214,7 +215,8 @@ export namespace LSP {
   async function getRoot(server: LSPServer.Info, file: string): Promise<string | undefined> {
     const root = await server.root(file)
     if (!root) return undefined
-    return path.isAbsolute(root) ? root : path.join(Instance.directory, root)
+    const dir = path.isAbsolute(root) ? root : path.join(Instance.directory, root)
+    return Filesystem.normalizePath(dir)
   }
 
   async function getClients(file: string) {

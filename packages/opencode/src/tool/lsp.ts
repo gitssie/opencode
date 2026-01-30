@@ -99,7 +99,7 @@ export const LspTool = Tool.define("lsp", {
 export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
   description: "Get LSP diagnostics (errors and warnings) for a file. This tool checks the file for compilation errors, type errors, and other issues reported by the language server.",
   parameters: z.object({
-    filePath: z.string().describe("The absolute or relative path to the file to check for diagnostics"),
+    filePath: z.string().describe("The relative path to the file to check for diagnostics"),
   }),
   execute: async (args, ctx) => {
     const filepath = path.isAbsolute(args.filePath) ? args.filePath : path.join(Instance.directory, args.filePath)
@@ -120,15 +120,16 @@ export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
     const relPath = path.relative(Instance.worktree, filepath)
     const title = `diagnostics ${relPath}`
 
-    await LSP.touchFile(filepath, true, 20000)
+    //await LSP.touchFile(filepath, true, 5000)
     const diagnostics = await LSP.diagnostics()
     const normalizedFilepath = Filesystem.normalizePath(filepath)
 
     let output = ""
 
     const issues = diagnostics[normalizedFilepath] ?? []
+    const errors = issues.filter((item) => item.severity === 1)
     if (issues.length > 0) {
-      output = `LSP diagnostics detected in this file:\n<diagnostics file="${filepath}">\n${issues.map(LSP.Diagnostic.pretty).join("\n")}\n</diagnostics>`
+      output = `LSP diagnostics detected in this file:\n<diagnostics file="${filepath}">\n${errors.map(LSP.Diagnostic.pretty).join("\n")}\n</diagnostics>`
     }
 
     if (output === "") {

@@ -581,7 +581,7 @@ export namespace Index {
         params[paramIndex++] = opts.relativePathRegex
       }
 
-      sql += ` ORDER BY d.id, s.start_line`
+      sql += ` ORDER BY d.id, s.kind LIMIT 5000`
 
       const rows = await this.all<ResultRow>(sql, params)
 
@@ -803,7 +803,7 @@ export namespace Index {
     const s = state()
 
     const getClients = async (file: string) => {
-      if (!await input.hasClients(file)) {
+      if (!(await input.hasClients(file))) {
         return []
       }
       const clients = await input.getClients(file)
@@ -845,33 +845,38 @@ export namespace Index {
 
       // 只在没有 timer 时创建
       if (!s.flushTimers.has(input.serverID)) {
-        s.flushTimers.set(input.serverID, setTimeout(async () => {
-          s.flushTimers.delete(input.serverID)
-          const pending = s.pendingUpdates.get(input.serverID)
-          if (!pending || pending.size === 0) return
+        s.flushTimers.set(
+          input.serverID,
+          setTimeout(async () => {
+            s.flushTimers.delete(input.serverID)
+            const pending = s.pendingUpdates.get(input.serverID)
+            if (!pending || pending.size === 0) return
 
-          const updates = new Map(pending)
-          pending.clear()
+            const updates = new Map(pending)
+            pending.clear()
 
-          await flushPendingUpdates({
-            index,
-            updates,
-            getClients,
-            serverID: input.serverID,
-          })
-        }, 2000))
+            await flushPendingUpdates({
+              index,
+              updates,
+              getClients,
+              serverID: input.serverID,
+            })
+          }, 2000),
+        )
       }
     })
 
     Bus.subscribe(LSP.Event.Updated, async (evt) => {
-      if(s.rebuildInProgress) {
+      if (s.rebuildInProgress) {
         return
       }
       const client = evt.properties.client as LSPClient.Info
       const extensions = evt.properties.extensions as string[]
       if (client.serverID !== input.serverID) return
-      await buildIndexForClient({ index, client, extensions })
-    });
+      setTimeout(async () => {
+        await buildIndexForClient({ index, client, extensions })
+      }, 2000)
+    })
 
     return {
       serverID: input.serverID,
@@ -1101,7 +1106,6 @@ export namespace Index {
     client: LSPClient.Info,
     extensions: string[],
   ): Promise<{ indexed: number; skipped: number; errors: number }> {
-
     if (extensions.length === 0) {
       return { indexed: 0, skipped: 0, errors: 0 }
     }
@@ -1124,15 +1128,17 @@ export namespace Index {
         const relativePath = path.relative(Instance.directory, fullPath).replace(/\\/g, "/")
 
         try {
-          const content = await Bun.file(fullPath).text().catch(() => "")
+          const content = await Bun.file(fullPath)
+            .text()
+            .catch(() => "")
           const hash = Bun.hash(content).toString()
 
           if (await index.isDocCached(relativePath, hash)) {
             skipped++
             continue
           }
-          
-          const input = {path: relativePath}
+
+          const input = { path: relativePath }
           await client.openFile(input)
 
           try {
@@ -1188,7 +1194,9 @@ export namespace Index {
 
       const fullPath = path.join(Instance.directory, relativePath)
       try {
-        const content = await Bun.file(fullPath).text().catch(() => "")
+        const content = await Bun.file(fullPath)
+          .text()
+          .catch(() => "")
         const hash = Bun.hash(content).toString()
 
         if (await index.isDocCached(relativePath, hash)) {
@@ -1346,10 +1354,14 @@ export namespace Index {
       const depth = opts.depth ?? 0
       const hasChildren = depth > 0 && sym.children && sym.children.length > 0
       if (!hasBody && !hasChildren) {
-        lines.push(`${prefix}<symbol name="${sym.namePath ?? sym.name}" kind="${kind}" line="${startLine}-${endLine}"${detail} />`)
+        lines.push(
+          `${prefix}<symbol name="${sym.namePath ?? sym.name}" kind="${kind}" line="${startLine}-${endLine}"${detail} />`,
+        )
         return
       }
-      lines.push(`${prefix}<symbol name="${sym.namePath ?? sym.name}" kind="${kind}" line="${startLine}-${endLine}"${detail}>`)
+      lines.push(
+        `${prefix}<symbol name="${sym.namePath ?? sym.name}" kind="${kind}" line="${startLine}-${endLine}"${detail}>`,
+      )
       if (hasBody) {
         lines.push(`${prefix}  <body><![CDATA[${sym.body}]]></body>`)
       }

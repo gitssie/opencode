@@ -240,14 +240,13 @@ export namespace LSPClient {
       },
       async openFile(input: { path: string}) {
         input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-        if (files[input.path] !== undefined) return
-
+        
         const file = Bun.file(input.path)
         const text = await file.text()
         const extension = path.extname(input.path)
         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-        diagnostics.delete(input.path)
+        //diagnostics.delete(input.path)
         await connection.sendNotification("textDocument/didOpen", {
           textDocument: {
             uri: pathToFileURL(input.path).href,
@@ -256,19 +255,17 @@ export namespace LSPClient {
             text,
           },
         })
-        files[input.path] = 0
+        //files[input.path] = 0
       },
       async closeFile(input: { path: string }) {
         input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-        if (files[input.path] === undefined) return
-
         await connection.sendNotification("textDocument/didClose", {
           textDocument: {
             uri: pathToFileURL(input.path).href,
           },
         })
-        delete files[input.path]
-        diagnostics.delete(input.path)
+        //delete files[input.path]
+        //diagnostics.delete(input.path)
       },
       async documentSymbol(input: { path: string; }) {
         input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
