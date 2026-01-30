@@ -458,53 +458,68 @@ export namespace LSPServer {
 
   export const ESLint: Info = {
     id: "eslint",
-    root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
+    root: NearestRoot(["eslint.config.js", ".eslintrc.js", ".eslintrc.json", ".eslintrc", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
+      // Check if project has eslint dependency
       const eslint = await Bun.resolve("eslint", root).catch(() => {})
       if (!eslint) return
+
       log.info("spawning eslint server")
-      const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
-      if (!(await Bun.file(serverPath).exists())) {
-        if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-        log.info("downloading and building VS Code ESLint server")
-        const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/heads/main.zip")
-        if (!response.ok) return
 
-        const zipPath = path.join(Global.Path.bin, "vscode-eslint.zip")
-        await Bun.file(zipPath).write(response)
+      // Try to find vscode-eslint-language-server from vscode-langservers-extracted
+      let bin: string | undefined
+      const ext = process.platform === "win32" ? ".exe" : ""
 
-        const ok = await Archive.extractZip(zipPath, Global.Path.bin)
-          .then(() => true)
-          .catch((error) => {
-            log.error("Failed to extract vscode-eslint archive", { error })
-            return false
-          })
-        if (!ok) return
-        await fs.rm(zipPath, { force: true })
-
-        const extractedPath = path.join(Global.Path.bin, "vscode-eslint-main")
-        const finalPath = path.join(Global.Path.bin, "vscode-eslint")
-
-        const stats = await fs.stat(finalPath).catch(() => undefined)
-        if (stats) {
-          log.info("removing old eslint installation", { path: finalPath })
-          await fs.rm(finalPath, { force: true, recursive: true })
-        }
-        await fs.rename(extractedPath, finalPath)
-
-        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-        await $`${npmCmd} install`.cwd(finalPath).quiet()
-        await $`${npmCmd} run compile`.cwd(finalPath).quiet()
-
-        log.info("installed VS Code ESLint server", { serverPath })
+      // Check global PATH first
+      const globalBin = Bun.which("vscode-eslint-language-server")
+      if (globalBin) {
+        bin = globalBin
       }
 
-      const proc = spawn(BunProc.which(), [serverPath, "--stdio"], {
+      if (!bin) {
+        // Try local installation in Global.Path.bin
+        const localBin = path.join(Global.Path.bin, "node_modules", ".bin", "vscode-eslint-language-server" + ext)
+        if (await pathExists(localBin)) {
+          bin = localBin
+        }
+      }
+
+      if (!bin) {
+        // Auto-install vscode-langservers-extracted to Global.Path.bin
+        if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
+        log.info("installing vscode-langservers-extracted")
+        const proc = Bun.spawn([BunProc.which(), "install", "vscode-langservers-extracted"], {
+          cwd: Global.Path.bin,
+          env: {
+            ...process.env,
+            BUN_BE_BUN: "1",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        await proc.exited
+        if (proc.exitCode !== 0) {
+          const stderr = await new Response(proc.stderr).text()
+          log.error("failed to install vscode-langservers-extracted", { exitCode: proc.exitCode, stderr })
+        }
+        // Re-check after installation
+        const localBin = path.join(Global.Path.bin, "node_modules", ".bin", "vscode-eslint-language-server" + ext)
+        if (await pathExists(localBin)) {
+          bin = localBin
+          log.info("installed vscode-eslint-language-server", { bin })
+        }
+      }
+
+      if (!bin) {
+        log.info("vscode-eslint-language-server not found")
+        return
+      }
+
+      const proc = spawn(bin, ["--stdio"], {
         cwd: root,
         env: {
           ...process.env,
-          BUN_BE_BUN: "1",
         },
       })
 

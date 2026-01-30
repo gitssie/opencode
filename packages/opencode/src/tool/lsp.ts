@@ -8,6 +8,9 @@ import { pathToFileURL } from "url"
 import { assertExternalDirectory } from "./external-directory"
 import { Filesystem } from "../util/filesystem"
 
+const MAX_DIAGNOSTICS_PER_FILE = 20
+const MAX_PROJECT_DIAGNOSTICS_FILES = 5
+
 const operations = [
   "goToDefinition",
   "findReferences",
@@ -125,11 +128,21 @@ export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
     const normalizedFilepath = Filesystem.normalizePath(filepath)
 
     let output = ""
+    let projectDiagnosticsCount = 0
 
-    const issues = diagnostics[normalizedFilepath] ?? []
-    const errors = issues.filter((item) => item.severity === 1)
-    if (issues.length > 0) {
-      output = `LSP diagnostics detected in this file:\n<diagnostics file="${filepath}">\n${errors.map(LSP.Diagnostic.pretty).join("\n")}\n</diagnostics>`
+    for (const [file, issues] of Object.entries(diagnostics)) {
+      const errors = issues.filter((item) => item.severity === 1)
+      if (errors.length === 0) continue
+      const limited = errors.slice(0, MAX_DIAGNOSTICS_PER_FILE)
+      const suffix =
+        errors.length > MAX_DIAGNOSTICS_PER_FILE ? `\n... and ${errors.length - MAX_DIAGNOSTICS_PER_FILE} more` : ""
+      if (file === normalizedFilepath) {
+        output += `\n\nLSP errors detected in this file, please fix:\n<diagnostics file="${filepath}">\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</diagnostics>`
+        continue
+      }
+      if (projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
+      projectDiagnosticsCount++
+      output += `\n\nLSP errors detected in other files:\n<diagnostics file="${file}">\n${limited.map(LSP.Diagnostic.pretty).join("\n")}${suffix}\n</diagnostics>`
     }
 
     if (output === "") {

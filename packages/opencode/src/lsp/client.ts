@@ -58,7 +58,18 @@ export namespace LSPClient {
 
     const diagnostics = new Map<string, Diagnostic[]>()
 
+    // files: path -> { version, refCount }
+    // version: LSP document version, incremented on touchFile
+    // refCount: number of openFile calls, decremented on closeFile
+    const files: {
+      [path: string]: { version: number; refCount: number }
+    } = {}
+
     const publishDiagnostics = (filePath:string,diagnosticsInfo:Diagnostic[]) => {
+      // Only collect diagnostics for files that are tracked and have version > 0 (touched)
+      const state = files[filePath]
+      if (!state || state.version === 0) return
+      
       const exists = diagnostics.has(filePath)
       diagnostics.set(filePath, diagnosticsInfo)
       if (!exists && input.serverID === "typescript") return
@@ -164,10 +175,6 @@ export namespace LSPClient {
 
     await ready?.();
 
-    const files: {
-      [path: string]: number
-    } = {}
-
     const result = {
       root: input.root,
       get serverID() {
@@ -176,96 +183,135 @@ export namespace LSPClient {
       get connection() {
         return connection
       },
-      notify: {
-        async open(openInput: { path: string }) {
-          openInput.path = path.isAbsolute(openInput.path)
-            ? openInput.path
-            : path.resolve(Instance.directory, openInput.path)
-          const file = Bun.file(openInput.path)
+      // touchFile: open or refresh file for diagnostics, version++
+      async touchFile(touchInput: { path: string }) {
+        touchInput.path = path.isAbsolute(touchInput.path)
+          ? touchInput.path
+          : path.resolve(Instance.directory, touchInput.path)
+        const filePath = touchInput.path
+
+        const state = files[filePath]
+        if (state) {
+          // Already open, send didChange with version++
+          const file = Bun.file(filePath)
           const text = await file.text()
-          const extension = path.extname(openInput.path)
-          const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-          const version = files[openInput.path]
-          if (version !== undefined) {
-            l.info("workspace/didChangeWatchedFiles", openInput)
-            await connection.sendNotification("workspace/didChangeWatchedFiles", {
-              changes: [
-                {
-                  uri: pathToFileURL(openInput.path).href,
-                  type: 2, // Changed
-                },
-              ],
-            })
-
-            const next = version + 1
-            files[openInput.path] = next
-            l.info("textDocument/didChange", {
-              path: openInput.path,
-              version: next,
-            })
-            await connection.sendNotification("textDocument/didChange", {
-              textDocument: {
-                uri: pathToFileURL(openInput.path).href,
-                version: next,
-              },
-              contentChanges: [{ text }],
-            })
-            return
-          }
-
-          l.info("workspace/didChangeWatchedFiles", openInput)
+          l.info("workspace/didChangeWatchedFiles", { path: filePath })
           await connection.sendNotification("workspace/didChangeWatchedFiles", {
             changes: [
               {
-                uri: pathToFileURL(openInput.path).href,
-                type: 1, // Created
+                uri: pathToFileURL(filePath).href,
+                type: 2, // Changed
               },
             ],
           })
 
-          l.info("textDocument/didOpen", openInput)
-          diagnostics.delete(openInput.path)
-          await connection.sendNotification("textDocument/didOpen", {
-            textDocument: {
-              uri: pathToFileURL(openInput.path).href,
-              languageId,
-              version: 0,
-              text,
-            },
+          const version = state.version
+          state.version++
+          l.info("textDocument/didChange", {
+            path: filePath,
+            version,
           })
-          files[openInput.path] = 0
+          await connection.sendNotification("textDocument/didChange", {
+            textDocument: {
+              uri: pathToFileURL(filePath).href,
+              version,
+            },
+            contentChanges: [{ text }],
+          })
           return
-        },
-      },
-      async openFile(input: { path: string}) {
-        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-        
-        const file = Bun.file(input.path)
+        }
+
+        // First open
+        // Set state synchronously to avoid concurrent didOpen
+        files[filePath] = { version: 1, refCount: 0 }
+
+        const file = Bun.file(filePath)
         const text = await file.text()
-        const extension = path.extname(input.path)
+        const extension = path.extname(filePath)
         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-        //diagnostics.delete(input.path)
+        l.info("workspace/didChangeWatchedFiles", { path: filePath })
+        await connection.sendNotification("workspace/didChangeWatchedFiles", {
+          changes: [
+            {
+              uri: pathToFileURL(filePath).href,
+              type: 1, // Created
+            },
+          ],
+        })
+
+        l.info("textDocument/didOpen", { path: filePath })
+        diagnostics.delete(filePath)
         await connection.sendNotification("textDocument/didOpen", {
           textDocument: {
-            uri: pathToFileURL(input.path).href,
+            uri: pathToFileURL(filePath).href,
             languageId,
             version: 0,
             text,
           },
         })
-        //files[input.path] = 0
       },
-      async closeFile(input: { path: string }) {
-        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-        await connection.sendNotification("textDocument/didClose", {
+      // openFile: explicitly open file, refCount++
+      async openFile(openInput: { path: string }) {
+        openInput.path = path.isAbsolute(openInput.path)
+          ? openInput.path
+          : path.resolve(Instance.directory, openInput.path)
+        const filePath = openInput.path
+
+        const state = files[filePath]
+        if (state) {
+          state.refCount++
+          return
+        }
+
+        // Set state synchronously to avoid concurrent didOpen
+        files[filePath] = { version: 0, refCount: 1 }
+
+        const file = Bun.file(filePath)
+        const text = await file.text()
+        const extension = path.extname(filePath)
+        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+
+        diagnostics.delete(filePath)
+        await connection.sendNotification("textDocument/didOpen", {
           textDocument: {
-            uri: pathToFileURL(input.path).href,
+            uri: pathToFileURL(filePath).href,
+            languageId,
+            version: 0,
+            text,
           },
         })
-        //delete files[input.path]
-        //diagnostics.delete(input.path)
+      },
+      // closeFile: explicitly close file, refCount--
+      // Only sends didClose if refCount<=0 and version===0 (no touchFile activity)
+      async closeFile(closeInput: { path: string }) {
+        closeInput.path = path.isAbsolute(closeInput.path)
+          ? closeInput.path
+          : path.resolve(Instance.directory, closeInput.path)
+        const filePath = closeInput.path
+
+        const state = files[filePath]
+        if (!state) return
+
+        state.refCount--
+
+        // Only close if no open references AND no touchFile activity (version===0)
+        if (state.refCount <= 0 && state.version === 0) {
+          await connection.sendNotification("textDocument/didClose", {
+            textDocument: {
+              uri: pathToFileURL(filePath).href,
+            },
+          })
+          delete files[filePath]
+          diagnostics.delete(filePath)
+        }
+      },
+      // Keep notify.open for backward compatibility, delegates to touchFile
+      notify: {
+        async open(openInput: { path: string }) {
+          return result.touchFile(openInput)
+        },
       },
       async documentSymbol(input: { path: string; }) {
         input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
