@@ -69,10 +69,10 @@ export namespace LSPClient {
       // Only collect diagnostics for files that are tracked and have version > 0 (touched)
       const state = files[filePath]
       if (!state || state.version === 0) return
-      
+     
       const exists = diagnostics.has(filePath)
       diagnostics.set(filePath, diagnosticsInfo)
-      if (!exists && input.serverID === "typescript") return
+      if (!exists && input.serverID === "typescript" && diagnosticsInfo.length == 0) return
       Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
     }
     
