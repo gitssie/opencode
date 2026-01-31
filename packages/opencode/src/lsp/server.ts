@@ -517,6 +517,77 @@ export namespace LSPServer {
 
       return {
         process: proc,
+        initialization: {
+          validate: "on",
+          packageManager: "npm",
+          useESLintClass: true,
+          codeAction: {
+            disableRuleComment: {
+              enable: true,
+              location: "separateLine",
+              commentStyle: "line",
+            },
+            showDocumentation: {
+              enable: true,
+            },
+          },
+          codeActionOnSave: {
+            mode: "all",
+            rules: null,
+          },
+          format: false,
+          quiet: false,
+          onIgnoredFiles: "off",
+          options: {},
+          rulesCustomizations: [],
+          run: "onType",
+          problems: {
+            shortenToSingleLine: false,
+          },
+          nodePath: null,
+          workspaceFolder: {
+            name: path.basename(root),
+            uri: pathToFileURL(root).href,
+          },
+          workingDirectory: {
+            mode: "location",
+          },
+        },
+      }
+    },
+    async setup({ connection, initialize }) {
+      // Merge ESLint-specific capabilities
+      initialize.capabilities = {
+        ...initialize.capabilities,
+        workspace: {
+          ...initialize.capabilities?.workspace,
+          configuration: true,
+          didChangeConfiguration: {
+            dynamicRegistration: true,
+          },
+          workspaceFolders: true,
+        },
+        textDocument: {
+          ...initialize.capabilities?.textDocument,
+          publishDiagnostics: {
+            relatedInformation: true,
+            tagSupport: {
+              valueSet: [1, 2],
+            },
+          },
+        },
+      }
+
+      return {
+        diagnostics: async (input: { path: string }) => {
+          const uri = pathToFileURL(input.path).href
+          const response = await connection.sendRequest("textDocument/diagnostic", {
+            textDocument: { uri },
+          })
+          const items = (response as any).items ?? []
+          log.debug("ESLint textDocument/diagnostic", { path: input.path, uri, count: items.length })
+          return items as LSPClient.Diagnostic[]
+        },
       }
     },
   }
