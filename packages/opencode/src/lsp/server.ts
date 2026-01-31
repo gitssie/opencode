@@ -461,65 +461,57 @@ export namespace LSPServer {
     root: NearestRoot(["eslint.config.js", ".eslintrc.js", ".eslintrc.json", ".eslintrc", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      // Check if project has eslint dependency
-      const eslint = await Bun.resolve("eslint", root).catch(() => {})
+      const eslint = await Bun.resolve("eslint", Instance.directory).catch(() => {})
       if (!eslint) return
-
       log.info("spawning eslint server")
-
-      // Try to find vscode-eslint-language-server from vscode-langservers-extracted
-      let bin: string | undefined
-      const ext = process.platform === "win32" ? ".exe" : ""
-
-      // Check global PATH first
-      const globalBin = Bun.which("vscode-eslint-language-server")
-      if (globalBin) {
-        bin = globalBin
-      }
-
-      if (!bin) {
-        // Try local installation in Global.Path.bin
-        const localBin = path.join(Global.Path.bin, "node_modules", ".bin", "vscode-eslint-language-server" + ext)
-        if (await pathExists(localBin)) {
-          bin = localBin
-        }
-      }
-
-      if (!bin) {
-        // Auto-install vscode-langservers-extracted to Global.Path.bin
+      const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
+      if (!(await Bun.file(serverPath).exists())) {
         if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-        log.info("installing vscode-langservers-extracted")
-        const proc = Bun.spawn([BunProc.which(), "install", "vscode-langservers-extracted"], {
-          cwd: Global.Path.bin,
-          env: {
-            ...process.env,
-            BUN_BE_BUN: "1",
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        })
-        await proc.exited
-        if (proc.exitCode !== 0) {
-          const stderr = await new Response(proc.stderr).text()
-          log.error("failed to install vscode-langservers-extracted", { exitCode: proc.exitCode, stderr })
+        log.info("downloading and building VS Code ESLint server")
+        const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/tags/release/3.0.20.zip")
+        if (!response.ok) return
+
+        const zipPath = path.join(Global.Path.bin, "vscode-eslint.zip")
+        await Bun.file(zipPath).write(response)
+
+        const ok = await Archive.extractZip(zipPath, Global.Path.bin)
+          .then(() => true)
+          .catch((error) => {
+            log.error("Failed to extract vscode-eslint archive", { error })
+            return false
+          })
+        if (!ok) return
+        await fs.rm(zipPath, { force: true })
+
+        const finalPath = path.join(Global.Path.bin, "vscode-eslint")
+
+        const stats = await fs.stat(finalPath).catch(() => undefined)
+        if (stats) {
+          log.info("removing old eslint installation", { path: finalPath })
+          await fs.rm(finalPath, { force: true, recursive: true })
         }
-        // Re-check after installation
-        const localBin = path.join(Global.Path.bin, "node_modules", ".bin", "vscode-eslint-language-server" + ext)
-        if (await pathExists(localBin)) {
-          bin = localBin
-          log.info("installed vscode-eslint-language-server", { bin })
-        }
+
+        // GitHub archive extracts to vscode-eslint-release-3.0.20
+        await fs.rename(path.join(Global.Path.bin, "vscode-eslint-release-3.0.20"), finalPath)
+
+        // Create symlink for $shared directory (required for server compilation)
+        const sharedSource = path.join(finalPath, "$shared")
+        const sharedTarget = path.join(finalPath, "server", "src", "shared")
+        await fs.rm(sharedTarget, { force: true, recursive: true })
+        await fs.symlink(sharedSource, sharedTarget, "junction")
+
+        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
+        await $`${npmCmd} install`.cwd(finalPath).quiet()
+        await $`${npmCmd} run compile:server`.cwd(finalPath).quiet()
+
+        log.info("installed VS Code ESLint server", { serverPath })
       }
 
-      if (!bin) {
-        log.info("vscode-eslint-language-server not found")
-        return
-      }
-
-      const proc = spawn(bin, ["--stdio"], {
+      const proc = spawn(BunProc.which(), [serverPath, "--stdio"], {
         cwd: root,
         env: {
           ...process.env,
+          BUN_BE_BUN: "1",
         },
       })
 
@@ -542,7 +534,6 @@ export namespace LSPServer {
     ]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".astro", ".svelte"],
     async spawn(root) {
-      log.info("spawn oxlint", { root })
       const ext = process.platform === "win32" ? ".cmd" : ""
 
       const serverTarget = path.join("node_modules", ".bin", "oxc_language_server" + ext)
@@ -589,6 +580,7 @@ export namespace LSPServer {
         if (found) serverBin = found
       }
       if (serverBin) {
+        log.info("spawn oxlint", { root })
         return {
           process: spawn(serverBin, [], {
             cwd: root,
@@ -632,47 +624,23 @@ export namespace LSPServer {
       ".html",
     ],
     async spawn(root) {
-      log.info("spawn biome", { root })
       const localBin = path.join(root, "node_modules", ".bin", "biome")
       let bin: string | undefined
       if (await Bun.file(localBin).exists()) bin = localBin
       if (!bin) {
-        const found = Bun.which("biome", {
-          PATH: process.env["PATH"] + path.delimiter + Global.Path.bin,
-        })
+        const found = Bun.which("biome")
         if (found) bin = found
       }
 
       let args = ["lsp-proxy", "--stdio"]
 
       if (!bin) {
-        // Try to resolve from project dependencies
         const resolved = await Bun.resolve("biome", root).catch(() => undefined)
-        if (resolved) {
-          bin = BunProc.which()
-          args = ["x", "biome", "lsp-proxy", "--stdio"]
-        } else {
-          // Auto-install biome to Global.Path.bin
-          if (Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) return
-          log.info("installing biome to opencode bin")
-          const js = path.join(Global.Path.bin, "node_modules", "@biomejs", "biome", "bin", "biome")
-          if (!(await Bun.file(js).exists())) {
-            await Bun.spawn([BunProc.which(), "install", "@biomejs/biome"], {
-              cwd: Global.Path.bin,
-              env: {
-                ...process.env,
-                BUN_BE_BUN: "1",
-              },
-              stdout: "pipe",
-              stderr: "pipe",
-            }).exited
-            log.info("installed biome", { path: js })
-          }
-          bin = BunProc.which()
-          args = ["run", js, "lsp-proxy", "--stdio"]
-        }
+        if (!resolved) return
+        bin = BunProc.which()
+        args = ["x", "biome", "lsp-proxy", "--stdio"]
       }
-
+      log.info("spawn biome", { root })
       const proc = spawn(bin, args, {
         cwd: root,
         env: {
@@ -680,6 +648,7 @@ export namespace LSPServer {
           BUN_BE_BUN: "1",
         },
       })
+
       return {
         process: proc,
       }
