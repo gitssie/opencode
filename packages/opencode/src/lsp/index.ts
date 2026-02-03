@@ -168,7 +168,7 @@ export namespace LSP {
       const indexes = new Map<string, Index.Info>();
       const s = await state();
       for (const server of Object.values(s.servers)) {
-        const index = await Index.create({ serverID: server.id, getClients, hasClients });
+        const index = await Index.create({ server, getClients, hasClients, getClientsByServerId });
         indexes.set(server.id, index)
       }
       return {
@@ -181,7 +181,6 @@ export namespace LSP {
   );
 
   export async function init() {
-    indexes()
     return state()
   }
 
@@ -217,6 +216,11 @@ export namespace LSP {
     if (!root) return undefined
     const dir = path.isAbsolute(root) ? root : path.join(Instance.directory, root)
     return Filesystem.normalizePath(dir)
+  }
+
+  async function getClientsByServerId(serverID: string) {
+    const s = await state()
+    return s.clients.filter((x) => x.serverID === serverID)
   }
 
   async function getClients(file: string) {

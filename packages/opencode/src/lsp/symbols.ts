@@ -11,6 +11,7 @@ import path from "path"
 import { LSPClient } from "./client"
 import type { Location as VSCodeLocation } from "vscode-languageserver-types"
 import { LSP } from "."
+import type { LSPServer } from "./server"
 
 export namespace Index {
   const log = Log.create({ service: "lsp.index" })
@@ -795,11 +796,13 @@ export namespace Index {
   }
 
   export async function create(input: {
-    serverID: string
+    server: LSPServer.Info
     getClients: (file: string) => Promise<LSPClient.Info[]>
     hasClients: (file: string) => Promise<boolean>
+    getClientsByServerId: (serverID: string) => Promise<LSPClient.Info[]>
   }) {
-    const index = new DuckDBIndex(input.serverID)
+    const serverID = input.server.id
+    const index = new DuckDBIndex(serverID)
     const s = state()
 
     const getClients = async (file: string) => {
@@ -807,8 +810,87 @@ export namespace Index {
         return []
       }
       const clients = await input.getClients(file)
-      return clients.filter((c) => c.serverID === input.serverID)
+      return clients.filter((c) => c.serverID === serverID)
     }
+
+    const hasClients = async (serverId: string) => {
+      const clients = await input.getClientsByServerId(serverId)
+      return clients ? clients.length > 0 : false
+    }
+
+    const buildIndexIncremental = async (client: LSPClient.Info) => {
+      const extensions = input.server.extensions
+      s.rebuildInProgress = true
+      try {
+        await buildIndexForClient({ index, client, extensions })
+      } finally {
+        s.rebuildInProgress = false
+      }
+    }
+
+    const initializeIndex = async () => {
+      if (s.rebuildInProgress) {
+        return
+      }
+      s.rebuildInProgress = true
+      try {
+        const clients = await input.getClientsByServerId(serverID)
+        for (const client of clients) {
+          await buildIndexForClient({ index, client, extensions: input.server.extensions })
+        }
+      } finally {
+        s.rebuildInProgress = false
+      }
+    }
+
+    // 订阅文件变更事件
+    Bus.subscribe(FileWatcher.Event.Updated, async (evt) => {
+      if ((await hasClients(serverID)) == false) {
+        return
+      }
+      const absolutePath = evt.properties.file
+      const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
+
+      // 确保当前 serverID 的 pendingUpdates 存在
+      if (!s.pendingUpdates.has(serverID)) {
+        s.pendingUpdates.set(serverID, new Map())
+      }
+
+      // 收集到 pending，使用 relativePath 作为 key
+      const pending = s.pendingUpdates.get(serverID)!
+      pending.set(relativePath, { event: evt.properties.event })
+
+      // 只在没有 timer 时创建
+      if (!s.flushTimers.has(serverID)) {
+        s.flushTimers.set(
+          serverID,
+          setTimeout(async () => {
+            s.flushTimers.delete(serverID)
+            const pending = s.pendingUpdates.get(serverID)
+            if (!pending || pending.size === 0) return
+
+            const updates = new Map(pending)
+            pending.clear()
+
+            await flushPendingUpdates({
+              index,
+              updates,
+              getClients,
+              serverID,
+            })
+          }, 2000),
+        )
+      }
+    })
+
+    Bus.subscribe(LSP.Event.Updated, async (evt) => {
+      if (s.rebuildInProgress) {
+        return
+      }
+      const client = evt.properties.client as LSPClient.Info
+      if (client.serverID !== serverID) return
+      buildIndexIncremental(client)
+    })
 
     async function buildIndex(buffer: FileBuffer): Promise<DocumentSymbol[]> {
       const relativePath = buffer.relativePath
@@ -829,57 +911,10 @@ export namespace Index {
       return res
     }
 
-    // 订阅文件变更事件
-    Bus.subscribe(FileWatcher.Event.Updated, (evt) => {
-      const absolutePath = evt.properties.file
-      const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
-
-      // 确保当前 serverID 的 pendingUpdates 存在
-      if (!s.pendingUpdates.has(input.serverID)) {
-        s.pendingUpdates.set(input.serverID, new Map())
-      }
-
-      // 收集到 pending，使用 relativePath 作为 key
-      const pending = s.pendingUpdates.get(input.serverID)!
-      pending.set(relativePath, { event: evt.properties.event })
-
-      // 只在没有 timer 时创建
-      if (!s.flushTimers.has(input.serverID)) {
-        s.flushTimers.set(
-          input.serverID,
-          setTimeout(async () => {
-            s.flushTimers.delete(input.serverID)
-            const pending = s.pendingUpdates.get(input.serverID)
-            if (!pending || pending.size === 0) return
-
-            const updates = new Map(pending)
-            pending.clear()
-
-            await flushPendingUpdates({
-              index,
-              updates,
-              getClients,
-              serverID: input.serverID,
-            })
-          }, 2000),
-        )
-      }
-    })
-
-    Bus.subscribe(LSP.Event.Updated, async (evt) => {
-      if (s.rebuildInProgress) {
-        return
-      }
-      const client = evt.properties.client as LSPClient.Info
-      const extensions = evt.properties.extensions as string[]
-      if (client.serverID !== input.serverID) return
-      setTimeout(async () => {
-        await buildIndexForClient({ index, client, extensions })
-      }, 2000)
-    })
-
+    // 启动时初始化索引
+    await initializeIndex()
     return {
-      serverID: input.serverID,
+      serverID,
       appender: index.createAppender(true),
       async isDocCached(relativePath: string, contentHash: string) {
         return await index.isDocCached(relativePath, contentHash)
