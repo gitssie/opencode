@@ -1,4 +1,4 @@
-import { type Subprocess, spawn } from "bun"
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import crypto from "crypto"
 import path from "path"
 import { mkdir, writeFile, symlink, stat } from "fs/promises"
@@ -41,7 +41,7 @@ const handlers = {
   async init({ dbPath }) {
     const absPath = resolve(dbPath)
     const dir = dirname(absPath)
-    await mkdir(dir)
+    await mkdir(dir, { recursive: true })
     instance = await DuckDBInstance.create(absPath)
     conn = await instance.connect()
     return true
@@ -118,7 +118,7 @@ process.stdin.on("data", async (chunk) => {
 `
 
 export class DuckDBIPCClient {
-  private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null
+  private proc: ChildProcessWithoutNullStreams | null = null
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }>()
   private id = 0
   private buffer = ""
@@ -136,8 +136,6 @@ export class DuckDBIPCClient {
 
   async start(): Promise<void> {
     if (this.started) return
-
-    log.info("starting duckdb ipc server", { dbPath: this.dbPath })
 
     // Ensure @duckdb/node-api is installed in Global.Path.bin
     const duckdbModulePath = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api")
@@ -167,12 +165,25 @@ export class DuckDBIPCClient {
     // Write the server code
     await writeFile(this.serverScriptPath, SERVER_CODE)
 
-    this.proc = spawn([BunProc.which(), "run", this.serverScriptPath], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      cwd: serverDir, // Run from isolated directory with symlinked node_modules
+    log.info("spawning duckdb server", { 
+      bunPath: BunProc.which(), 
+      serverScript: this.serverScriptPath,
+      cwd: serverDir 
     })
+
+    this.proc = spawn(BunProc.which(), ["run", this.serverScriptPath], {
+      cwd: serverDir,
+      env: {
+        ...process.env,
+        BUN_BE_BUN: "1",
+      },
+    })
+
+    if (!this.proc) {
+      throw new Error("Failed to spawn DuckDB server process")
+    }
+
+    log.info("duckdb server spawned", { pid: this.proc.pid })
 
     this.setupReader()
     this.setupErrorReader()
@@ -185,39 +196,27 @@ export class DuckDBIPCClient {
   private setupReader(): void {
     if (!this.proc) return
 
-    const reader = this.proc.stdout.getReader()
-    const read = async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          this.buffer += new TextDecoder().decode(value)
-          this.processBuffer()
-        }
-      } catch (e) {
-        log.debug("stdout reader error", { error: e })
-      }
-    }
-    read()
+    this.proc.stdout.on("data", (chunk: Buffer) => {
+      this.buffer += chunk.toString()
+      this.processBuffer()
+    })
+
+    this.proc.stdout.on("error", (e) => {
+      log.debug("stdout reader error", { error: e })
+    })
   }
 
   private setupErrorReader(): void {
     if (!this.proc) return
 
-    const reader = this.proc.stderr.getReader()
-    const read = async () => {
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const text = new TextDecoder().decode(value)
-          log.error("duckdb server stderr", { text })
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-    read()
+    this.proc.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString()
+      log.error("duckdb server stderr", { text })
+    })
+
+    this.proc.stderr.on("error", (e) => {
+      log.debug("stderr reader error", { error: e })
+    })
   }
 
   private processBuffer(): void {
@@ -245,7 +244,7 @@ export class DuckDBIPCClient {
   }
 
   private async ensureRunning(): Promise<void> {
-    if (!this.proc || this.proc.exitCode !== null) {
+    if (!this.proc || this.proc.killed) {
       if (this.restartCount >= this.maxRestarts) {
         throw new Error("DuckDB server crashed too many times")
       }
@@ -335,6 +334,6 @@ export class DuckDBIPCClient {
   }
 
   isStarted(): boolean {
-    return this.started && this.proc !== null && this.proc.exitCode === null
+    return this.started && this.proc !== null && !this.proc.killed
   }
 }
