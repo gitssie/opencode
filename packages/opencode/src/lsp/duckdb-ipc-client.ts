@@ -1,7 +1,7 @@
 import { type Subprocess, spawn } from "bun"
 import crypto from "crypto"
 import path from "path"
-import { mkdir, writeFile } from "fs/promises"
+import { mkdir, writeFile, symlink, stat } from "fs/promises"
 import { Log } from "../util/log"
 import { Global } from "../global"
 import { BunProc } from "../bun"
@@ -149,10 +149,18 @@ export class DuckDBIPCClient {
       }).exited
     }
 
-    // Write server script to Global.Path.bin (where @duckdb/node-api is installed)
+    // Write server script to isolated directory
     const serverDir = path.join(Global.Path.bin, "lsp-symbols-index")
-    await mkdir(serverDir)
+    await mkdir(serverDir, { recursive: true })
     this.serverScriptPath = path.join(serverDir, "server.js")
+    
+    // Create symlink to node_modules for isolated working directory
+    const nodeModulesLink = path.join(serverDir, "node_modules")
+    const nodeModulesTarget = path.join(Global.Path.bin, "node_modules")
+    const linkExists = await stat(nodeModulesLink).then(() => true).catch(() => false)
+    if (!linkExists) {
+      await symlink(nodeModulesTarget, nodeModulesLink, "junction")
+    }
     
     // Write the server code
     await writeFile(this.serverScriptPath, SERVER_CODE)
@@ -161,7 +169,7 @@ export class DuckDBIPCClient {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      cwd: Global.Path.bin, // Run from bin directory where node_modules exists
+      cwd: serverDir, // Run from isolated directory with symlinked node_modules
     })
 
     this.setupReader()
