@@ -443,15 +443,42 @@ export namespace LSPServer {
               }
             })
           }),
-        diagnostics:async (input: { path: string }) => {
+        diagnostics: async (input: { path: string }) => {
           const uri = pathToFileURL(input.path).href
           log.debug("textDocument/diagnostic", { path: input.path })
           const response = await connection.sendRequest("textDocument/diagnostic", {
             textDocument: { uri },
-          });
+          })
           const items = (response as any).items ?? []
           return items as LSPClient.Diagnostic[]
-        }
+        },
+        documentSymbol: async (input: { path: string }) => {
+          const uri = pathToFileURL(input.path).href
+          const response = await connection.sendRequest("textDocument/documentSymbol", {
+            textDocument: { uri },
+          })
+          const symbols = (response ?? []) as LSPClient.DocumentSymbol[]
+          if (symbols.length === 0) return []
+
+          // Wrap all root symbols in a Module symbol named after the file
+          const fileName = path.basename(input.path, path.extname(input.path))
+          const content = await Bun.file(input.path).text().catch(() => "")
+          const lines = content.split("\n")
+          const vueSymbol: LSPClient.DocumentSymbol = {
+            name: fileName,
+            kind: 2, // Module
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: lines.length, character: 0 },
+            },
+            selectionRange: {
+              start: { line: 0, character: 0 },
+              end: { line: lines.length, character: 0},
+            },
+            children: symbols,
+          }
+          return [vueSymbol]
+        },
       }
     },
   }
@@ -588,6 +615,9 @@ export namespace LSPServer {
           log.debug("ESLint textDocument/diagnostic", { path: input.path, uri, count: items.length })
           return items as LSPClient.Diagnostic[]
         },
+        documentSymbol: async (input: { path: string }) => {
+          return []
+        },
       }
     },
   }
@@ -722,6 +752,13 @@ export namespace LSPServer {
 
       return {
         process: proc,
+      }
+    },
+    async setup({ initialize }) {
+      return {
+        documentSymbol: async (input: { path: string }) => {
+          return []
+        },
       }
     },
   }
