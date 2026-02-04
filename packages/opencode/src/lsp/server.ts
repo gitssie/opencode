@@ -1146,7 +1146,7 @@ export namespace LSPServer {
 
   export const CSharp: Info = {
     id: "csharp",
-    root: NearestRoot([".sln", ".csproj", "global.json"]),
+    root: NearestRoot([".slnx", ".sln", ".csproj", "global.json"]),
     extensions: [".cs"],
     async spawn(root) {
       log.info("spawn csharp-ls", { root })
@@ -1187,7 +1187,7 @@ export namespace LSPServer {
 
   export const FSharp: Info = {
     id: "fsharp",
-    root: NearestRoot([".sln", ".fsproj", "global.json"]),
+    root: NearestRoot([".slnx", ".sln", ".fsproj", "global.json"]),
     extensions: [".fs", ".fsi", ".fsx", ".fsscript"],
     async spawn(root) {
       log.info("spawn fsautocomplete", { root })
