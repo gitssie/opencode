@@ -31,14 +31,14 @@ interface RPCResponse {
 // Server code as string - will be written to temp file at runtime
 // This avoids @duckdb/node-api dependency in main process compilation
 const SERVER_CODE = String.raw`import { DuckDBInstance, listValue, LIST, VARCHAR } from "@duckdb/node-api"
+import { mkdir } from "fs/promises"
+import { dirname } from "path"
 
 let conn = null
 let instance = null
 
 const handlers = {
   async init({ dbPath }) {
-    const { mkdir } = await import("fs/promises")
-    const { dirname } = await import("path")
     await mkdir(dirname(dbPath), { recursive: true })
     instance = await DuckDBInstance.create(dbPath)
     conn = await instance.connect()
@@ -135,12 +135,11 @@ export class DuckDBIPCClient {
   async start(): Promise<void> {
     if (this.started) return
 
-    log.debug("starting duckdb ipc server", { dbPath: this.dbPath })
+    log.info("starting duckdb ipc server", { dbPath: this.dbPath })
 
     // Ensure @duckdb/node-api is installed in Global.Path.bin
     const duckdbModulePath = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api")
     if (!(await Bun.file(path.join(duckdbModulePath, "package.json")).exists())) {
-      log.info("installing @duckdb/node-api")
       await Bun.spawn([BunProc.which(), "install", "@duckdb/node-api"], {
         cwd: Global.Path.bin,
         env: {
@@ -152,16 +151,11 @@ export class DuckDBIPCClient {
 
     // Write server script to Global.Path.bin (where @duckdb/node-api is installed)
     const serverDir = path.join(Global.Path.bin, "lsp-symbols-index")
-    await mkdir(serverDir, { recursive: true })
+    await mkdir(serverDir)
     this.serverScriptPath = path.join(serverDir, "server.js")
     
     // Write the server code
     await writeFile(this.serverScriptPath, SERVER_CODE)
-
-    log.debug("spawning duckdb server", { 
-      script: this.serverScriptPath, 
-      cwd: Global.Path.bin,
-    })
 
     this.proc = spawn([BunProc.which(), "run", this.serverScriptPath], {
       stdin: "pipe",
@@ -176,8 +170,6 @@ export class DuckDBIPCClient {
     await this.request("init", { dbPath: this.dbPath })
     this.started = true
     this.restartCount = 0
-
-    log.debug("duckdb ipc server started")
   }
 
   private setupReader(): void {
