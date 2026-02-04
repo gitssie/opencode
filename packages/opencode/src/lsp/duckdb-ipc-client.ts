@@ -32,15 +32,17 @@ interface RPCResponse {
 // This avoids @duckdb/node-api dependency in main process compilation
 const SERVER_CODE = String.raw`import { DuckDBInstance, listValue, LIST, VARCHAR } from "@duckdb/node-api"
 import { mkdir } from "fs/promises"
-import { dirname } from "path"
+import { dirname, resolve } from "path"
 
 let conn = null
 let instance = null
 
 const handlers = {
   async init({ dbPath }) {
-    await mkdir(dirname(dbPath), { recursive: true })
-    instance = await DuckDBInstance.create(dbPath)
+    const absPath = resolve(dbPath)
+    const dir = dirname(absPath)
+    await mkdir(dir)
+    instance = await DuckDBInstance.create(absPath)
     conn = await instance.connect()
     return true
   },
