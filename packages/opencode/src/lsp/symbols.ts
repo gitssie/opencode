@@ -1,8 +1,7 @@
-import { DuckDBInstance, listValue, LIST, VARCHAR, type DuckDBConnection } from "@duckdb/node-api"
-import { mkdir } from "fs/promises"
 import { pathToFileURL } from "url"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
+import { DuckDBIPCClient, type ColumnDef } from "./duckdb-ipc-client"
 import { Ripgrep } from "../file/ripgrep"
 import { IGNORE_PATTERNS } from "../tool/ls"
 import { Bus } from "../bus"
@@ -138,8 +137,8 @@ export namespace Index {
   }
 
   export interface SymbolAppender {
-    append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): void
-    commit(): void
+    append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): Promise<void>
+    commit(): Promise<void>
   }
 
   // Symbol row data type
@@ -189,25 +188,22 @@ export namespace Index {
     content_hash: string
   }
 
-  // ==================== Shared DuckDB State (via Instance.state) ====================
+  // ==================== Shared DuckDB IPC Client (via Instance.state) ====================
 
-  const duckdbState = Instance.state(
+  const ipcClientState = Instance.state(
     async () => {
-      const dbPath = path.join(Instance.directory, ".lsp", "symbol_db.duckdb")
-      const dir = path.dirname(dbPath)
-      await mkdir(dir, { recursive: true })
-      const instance = await DuckDBInstance.create(dbPath)
-      const conn = await instance.connect()
-      return { instance, conn }
+      const client = new DuckDBIPCClient(Instance.directory)
+      await client.start()
+      return { client }
     },
     async (s) => {
-      s.conn.closeSync()
+      await s.client.shutdown()
     },
   )
 
-  async function getSharedConnection(): Promise<DuckDBConnection> {
-    const s = await duckdbState()
-    return s.conn
+  async function getSharedClient(): Promise<DuckDBIPCClient> {
+    const s = await ipcClientState()
+    return s.client
   }
 
   export class DuckDBIndex implements SymbolIndex {
@@ -224,13 +220,13 @@ export namespace Index {
       this.schemaInitialized = false
     }
 
-    private async ensureInit(): Promise<DuckDBConnection> {
-      const conn = await getSharedConnection()
+    private async ensureInit(): Promise<DuckDBIPCClient> {
+      const client = await getSharedClient()
       if (!this.schemaInitialized) {
-        await this.initSchema(conn)
+        await this.initSchema(client)
         this.schemaInitialized = true
       }
-      return conn
+      return client
     }
 
     stop(): void {
@@ -245,27 +241,30 @@ export namespace Index {
     }
 
     private async exec(sql: string): Promise<void> {
-      const conn = await this.ensureInit()
-      await conn.run(sql)
+      const client = await this.ensureInit()
+      await client.exec(sql)
     }
 
     private async run(sql: string, params?: Record<string, any>): Promise<void> {
-      const conn = await this.ensureInit()
-      await conn.run(sql, params)
+      const client = await this.ensureInit()
+      if (params) {
+        await client.delete(sql, params)
+      } else {
+        await client.exec(sql)
+      }
     }
 
     private async all<T>(sql: string, params?: Record<string, any>): Promise<T[]> {
-      const conn = await this.ensureInit()
-      const reader = await conn.runAndReadAll(sql, params)
-      return reader.getRowObjects() as T[]
+      const client = await this.ensureInit()
+      return client.query<T>(sql, params)
     }
 
-    private async initSchema(conn: DuckDBConnection): Promise<void> {
+    private async initSchema(client: DuckDBIPCClient): Promise<void> {
       const schema = this.schemaName
 
-      await conn.run(`CREATE SCHEMA IF NOT EXISTS ${schema}`)
+      await client.exec(`CREATE SCHEMA IF NOT EXISTS ${schema}`)
 
-      await conn.run(`
+      await client.exec(`
       CREATE TABLE IF NOT EXISTS ${schema}.docs (
         id VARCHAR PRIMARY KEY,
         name VARCHAR,
@@ -276,7 +275,7 @@ export namespace Index {
       )
     `)
 
-      await conn.run(`
+      await client.exec(`
       CREATE TABLE IF NOT EXISTS ${schema}.symbols (
         id VARCHAR PRIMARY KEY,
         doc_id VARCHAR NOT NULL,
@@ -295,9 +294,9 @@ export namespace Index {
       )
     `)
 
-      await conn.run(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_doc ON ${schema}.symbols(doc_id)`)
-      await conn.run(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_parent ON ${schema}.symbols(parent_id)`)
-      await conn.run(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_name_path ON ${schema}.symbols(name_path)`)
+      await client.exec(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_doc ON ${schema}.symbols(doc_id)`)
+      await client.exec(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_parent ON ${schema}.symbols(parent_id)`)
+      await client.exec(`CREATE INDEX IF NOT EXISTS idx_${schema}_symbols_name_path ON ${schema}.symbols(name_path)`)
     }
 
     private makeDocId(relativePath: string): string {
@@ -401,7 +400,7 @@ export namespace Index {
 
     // 批量保存（供 BatchAppender 使用）
     async batchSave(docRows: DocRow[], symbolRows: SymbolRow[], docIdsToDelete: string[]): Promise<void> {
-      const conn = await this.ensureInit()
+      const client = await this.ensureInit()
       const schema = this.schemaName
 
       // 删除旧数据
@@ -411,49 +410,66 @@ export namespace Index {
         docIdsToDelete.forEach((id, i) => {
           params[i + 1] = id
         })
-        await conn.run(`DELETE FROM ${schema}.symbols WHERE doc_id IN (${placeholders})`, params)
-        await conn.run(`DELETE FROM ${schema}.docs WHERE id IN (${placeholders})`, params)
+        await client.delete(`DELETE FROM ${schema}.symbols WHERE doc_id IN (${placeholders})`, params)
+        await client.delete(`DELETE FROM ${schema}.docs WHERE id IN (${placeholders})`, params)
       }
 
-      // 批量插入 docs（使用 Appender）
+      // 批量插入 docs（使用 IPC appendRows）
       if (docRows.length > 0) {
-        const appender = await conn.createAppender("docs", schema)
-        for (const row of docRows) {
-          appender.appendVarchar(row.id)
-          appender.appendVarchar(row.name)
-          appender.appendVarchar(row.relativePath)
-          appender.appendVarchar(row.contentHash)
-          appender.appendBigInt(BigInt(Date.now()))
-          appender.appendInteger(row.schemaVersion)
-          appender.endRow()
-        }
-        appender.flushSync()
-        appender.closeSync()
+        const docColumns: ColumnDef[] = [
+          { name: "id", type: "varchar" },
+          { name: "name", type: "varchar" },
+          { name: "relative_path", type: "varchar" },
+          { name: "content_hash", type: "varchar" },
+          { name: "last_modified", type: "bigint" },
+          { name: "schema_version", type: "integer" },
+        ]
+        const docData = docRows.map((row) => [
+          row.id,
+          row.name,
+          row.relativePath,
+          row.contentHash,
+          Date.now(),
+          row.schemaVersion,
+        ])
+        await client.appendRows("docs", schema, docColumns, docData)
       }
 
-      // 批量插入 symbols（使用 Appender）
+      // 批量插入 symbols（使用 IPC appendRows）
       if (symbolRows.length > 0) {
-        const appender = await conn.createAppender("symbols", schema)
-        for (const row of symbolRows) {
-          appender.appendVarchar(row.id)
-          appender.appendVarchar(row.docId)
-          row.parentId ? appender.appendVarchar(row.parentId) : appender.appendNull()
-          // parent_ids 数组 - 使用 listValue 指定类型
-          appender.appendList(listValue(row.parentIds), LIST(VARCHAR))
-          appender.appendVarchar(row.name)
-          appender.appendVarchar(row.namePath)
-          appender.appendInteger(row.kind)
-          appender.appendInteger(row.startLine)
-          appender.appendInteger(row.startChar)
-          appender.appendInteger(row.endLine)
-          appender.appendInteger(row.endChar)
-          row.body ? appender.appendVarchar(row.body) : appender.appendNull()
-          row.detail ? appender.appendVarchar(row.detail) : appender.appendNull()
-          appender.appendInteger(row.overloadIdx)
-          appender.endRow()
-        }
-        appender.flushSync()
-        appender.closeSync()
+        const symbolColumns: ColumnDef[] = [
+          { name: "id", type: "varchar" },
+          { name: "doc_id", type: "varchar" },
+          { name: "parent_id", type: "varchar", nullable: true },
+          { name: "parent_ids", type: "varchar[]" },
+          { name: "name", type: "varchar" },
+          { name: "name_path", type: "varchar" },
+          { name: "kind", type: "integer" },
+          { name: "start_line", type: "integer" },
+          { name: "start_char", type: "integer" },
+          { name: "end_line", type: "integer" },
+          { name: "end_char", type: "integer" },
+          { name: "body", type: "text", nullable: true },
+          { name: "detail", type: "text", nullable: true },
+          { name: "overload_idx", type: "integer" },
+        ]
+        const symbolData = symbolRows.map((row) => [
+          row.id,
+          row.docId,
+          row.parentId,
+          row.parentIds,
+          row.name,
+          row.namePath,
+          row.kind,
+          row.startLine,
+          row.startChar,
+          row.endLine,
+          row.endChar,
+          row.body,
+          row.detail,
+          row.overloadIdx,
+        ])
+        await client.appendRows("symbols", schema, symbolColumns, symbolData)
       }
     }
 
@@ -688,23 +704,22 @@ export namespace Index {
   class SingleAppender implements SymbolAppender {
     constructor(private backend: SymbolIndex) {}
 
-    append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): void {
+    async append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): Promise<void> {
       this.backend.storeDocSymbols(relativePath, contentHash, symbols)
     }
 
-    commit(): void {}
+    async commit(): Promise<void> {}
   }
 
   class DuckDBBatchAppender implements SymbolAppender {
     private docRows: DocRow[] = []
     private symbolRows: SymbolRow[] = []
     private docIdsToDelete: string[] = []
-    private batchSize = 2000
-    private log = Log.create({ service: "lsp.index.batch-appender" })
+    private batchSize = 1000
 
     constructor(private backend: DuckDBIndex) {}
 
-    append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): void {
+    async append(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): Promise<void> {
       const docRow = this.backend.createDocRow(relativePath, contentHash)
       const rows: SymbolRow[] = []
       this.backend.collectSymbolRows(docRow.id, symbols, null, "", [], rows)
@@ -714,24 +729,26 @@ export namespace Index {
       this.docIdsToDelete.push(docRow.id)
 
       if (this.symbolRows.length >= this.batchSize) {
-        this.flush()
+        await this.flush()
       }
     }
 
-    private flush(): void {
+    private async flush(): Promise<void> {
       if (this.docRows.length === 0) return
 
-      this.backend
-        .batchSave(this.docRows, this.symbolRows, this.docIdsToDelete)
-        .catch((e) => this.log.error("batch flush error", { error: e }))
+      const docRows = this.docRows
+      const symbolRows = this.symbolRows
+      const docIdsToDelete = this.docIdsToDelete
 
       this.docRows = []
       this.symbolRows = []
       this.docIdsToDelete = []
+
+      await this.backend.batchSave(docRows, symbolRows, docIdsToDelete)
     }
 
-    commit(): void {
-      this.flush()
+    async commit(): Promise<void> {
+      await this.flush()
     }
   }
 
@@ -1040,14 +1057,11 @@ export namespace Index {
     rebuild?: boolean
   }): Promise<{ indexed: number; skipped: number; errors: number }> {
     const { indexes, extensions, getSymbols, rebuild } = options
-
+    const s = state()
     if (extensions.size === 0) {
-      log.debug("buildIndex: no extensions configured, skipping")
       return { indexed: 0, skipped: 0, errors: 0 }
     }
-    const s = state()
     s.rebuildInProgress = true
-
     let indexed = 0
     let skipped = 0
     let errors = 0
@@ -1088,8 +1102,9 @@ export namespace Index {
               skipped++
               continue
             }
-
-            index.appender.append(relativePath, hash, symbols)
+            if(symbols?.length > 0){
+              await index.appender.append(relativePath, hash, symbols)
+            }
           }
           indexed++
         } catch (e) {
@@ -1099,7 +1114,7 @@ export namespace Index {
       }
 
       for (const index of indexes.values()) {
-        index.appender.commit()
+        await index.appender.commit()
       }
 
       log.info("buildIndex: completed", { indexed, skipped, errors, fileCount })
@@ -1122,7 +1137,6 @@ export namespace Index {
     // 检查是否已经在构建中
     const existing = s.buildingClients.get(key)
     if (existing) {
-      log.debug("buildIndexForClient: already in progress, waiting", { key })
       return existing
     }
 
@@ -1179,7 +1193,7 @@ export namespace Index {
           try {
             const symbols = await client.documentSymbol(input)
             if (symbols && symbols.length > 0) {
-              appender.append(relativePath, hash, symbols as DocumentSymbol[])
+              await appender.append(relativePath, hash, symbols as DocumentSymbol[])
               indexed++
             }
           } finally {
@@ -1191,7 +1205,7 @@ export namespace Index {
         }
       }
 
-      appender.commit()
+      await appender.commit()
       log.info("buildIndexForClient: completed", { serverID: client.serverID, indexed, skipped, errors })
     } catch (e) {
       log.error("buildIndexForClient: failed", { serverID: client.serverID, error: e })
@@ -1244,7 +1258,7 @@ export namespace Index {
           try {
             const symbols = await client.documentSymbol(input)
             if (symbols && symbols.length > 0) {
-              appender.append(relativePath, hash, symbols as DocumentSymbol[])
+              await appender.append(relativePath, hash, symbols as DocumentSymbol[])
             }
           } finally {
             await client.closeFile(input)
@@ -1256,7 +1270,7 @@ export namespace Index {
         log.debug("flushPendingUpdates: error", { relativePath, error: e })
       }
     }
-    appender.commit()
+    await appender.commit()
     return { indexed, deleted, skipped, errors }
   }
 
