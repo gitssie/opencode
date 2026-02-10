@@ -488,7 +488,7 @@ export namespace LSPServer {
     root: NearestRoot(["eslint.config.js", ".eslintrc.js", ".eslintrc.json", ".eslintrc", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      const eslint = await Bun.resolve("eslint", Instance.directory).catch(() => {})
+      const eslint = await Bun.resolve("eslint", root).catch(() => {})
       if (!eslint) return
       log.info("spawning eslint server")
       const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
@@ -916,7 +916,7 @@ export namespace LSPServer {
   export const Pyright: Info = {
     id: "pyright",
     extensions: [".py", ".pyi"],
-    root: NearestRoot(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]),
+    root: NearestRoot(["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json", "uv.lock"]),
     async spawn(root) {
       log.info("spawn pyright", { root })
       let binary = Bun.which("pyright-langserver")
@@ -940,17 +940,36 @@ export namespace LSPServer {
 
       const initialization: Record<string, string> = {}
 
-      const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
-        (p): p is string => p !== undefined,
-      )
-      for (const venvPath of potentialVenvPaths) {
-        const isWindows = process.platform === "win32"
-        const potentialPythonPath = isWindows
-          ? path.join(venvPath, "Scripts", "python.exe")
-          : path.join(venvPath, "bin", "python")
-        if (await Bun.file(potentialPythonPath).exists()) {
-          initialization["pythonPath"] = potentialPythonPath
-          break
+      // Try to detect uv-managed Python first
+      if (Bun.which("uv")) {
+        try {
+          const uvPython = await $`uv run which python`.cwd(root).quiet().nothrow()
+          if (uvPython.exitCode === 0) {
+            const pythonPath = uvPython.text().trim()
+            if (pythonPath && (await Bun.file(pythonPath).exists())) {
+              initialization["pythonPath"] = pythonPath
+              log.info("detected uv-managed python", { pythonPath })
+            }
+          }
+        } catch (err) {
+          // Fall through to standard venv detection
+        }
+      }
+
+      // Fall back to standard venv detection if uv detection failed
+      if (!initialization["pythonPath"]) {
+        const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
+          (p): p is string => p !== undefined,
+        )
+        for (const venvPath of potentialVenvPaths) {
+          const isWindows = process.platform === "win32"
+          const potentialPythonPath = isWindows
+            ? path.join(venvPath, "Scripts", "python.exe")
+            : path.join(venvPath, "bin", "python")
+          if (await Bun.file(potentialPythonPath).exists()) {
+            initialization["pythonPath"] = potentialPythonPath
+            break
+          }
         }
       }
 
