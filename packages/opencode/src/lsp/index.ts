@@ -3,7 +3,7 @@ import { Bus } from "@/bus"
 import { Log } from "../util/log"
 import { LSPClient } from "./client"
 import path from "path"
-import { pathToFileURL } from "url"
+import { pathToFileURL, fileURLToPath } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
 import { Config } from "../config/config"
@@ -438,10 +438,10 @@ export namespace LSP {
     ).then((result) => result.flat() as LSP.Symbol[])
   }
 
-  export async function documentSymbol(file: string) {
-    const uri = pathToFileURL(file).href
-    return run(file, (client) => {
-      return client.connection
+  export async function documentSymbol(uri: string) {
+    const file = fileURLToPath(uri)
+    return run(file, (client) =>
+      client.connection
         .sendRequest("textDocument/documentSymbol", {
           textDocument: {
             uri,
@@ -450,7 +450,7 @@ export namespace LSP {
           log.error("documentSymbol error", { serverID: client.serverID, error: err })
           return []
         })
-    })
+    )
       .then((result) => result.flat() as (LSP.DocumentSymbol | LSP.Symbol)[])
       .then((result) => result.filter(Boolean))
   }
