@@ -111,8 +111,26 @@ export namespace LSPServer {
         log.info("typescript server not found", { root, tsserver })
         return
       }
-      // Try to find @vue/typescript-plugin for Vue file support (installed with @vue/language-server in Global.Path.bin)
-      const vuePluginPath = await Bun.resolve("@vue/typescript-plugin", Global.Path.bin).catch(() => {})
+
+      // Only load @vue/typescript-plugin if the project depends on vue
+      const vue = await Bun.resolve("vue", root).catch(() => {})
+      let vuePluginPath: string | undefined
+      if (vue) {
+        const pluginJs = path.join(Global.Path.bin, "node_modules", "@vue", "typescript-plugin", "index.js")
+        if (!(await Filesystem.exists(pluginJs))) {
+          if (!Flag.OPENCODE_DISABLE_LSP_DOWNLOAD) {
+            log.info("installing @vue/language-server for typescript-plugin")
+            await Bun.spawn([BunProc.which(), "install", "@vue/language-server"], {
+              cwd: Global.Path.bin,
+              env: { ...process.env, BUN_BE_BUN: "1" },
+              stdout: "pipe",
+              stderr: "pipe",
+              stdin: "pipe",
+            }).exited
+          }
+        }
+        vuePluginPath = await Bun.resolve("@vue/typescript-plugin", Global.Path.bin).catch(() => undefined)
+      }
 
       log.info("typescript server", { root, tsserver, vuePluginPath })
 
