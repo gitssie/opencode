@@ -279,8 +279,8 @@ export namespace LSPClient {
 
         if (refCounts[filePath] <= 0) {
           delete refCounts[filePath]
-          // Only close if not also tracked via notify.open (files entry present means touched)
-          if (files[filePath] === 0) {
+          // Only close if tracked in files (was opened via notify.open or openFile)
+          if (files[filePath] !== undefined) {
             delete files[filePath]
             await connection.sendNotification("textDocument/didClose", {
               textDocument: {
