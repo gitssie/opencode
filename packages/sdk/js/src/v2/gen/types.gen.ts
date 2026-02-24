@@ -76,10 +76,50 @@ export type EventLspClientDiagnostics = {
   }
 }
 
+export type PermissionRequest = {
+  id: string
+  sessionID: string
+  permission: string
+  patterns: Array<string>
+  metadata: {
+    [key: string]: unknown
+  }
+  always: Array<string>
+  tool?: {
+    messageID: string
+    callID: string
+  }
+}
+
+export type EventPermissionAsked = {
+  type: "permission.asked"
+  properties: PermissionRequest
+}
+
+export type EventPermissionReplied = {
+  type: "permission.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    reply: "once" | "always" | "reject"
+  }
+}
+
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
+  properties: {
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
 export type EventLspUpdated = {
   type: "lsp.updated"
   properties: {
-    [key: string]: unknown
+    serverID: string
+    root: string
+    client: unknown
+    extensions: Array<string>
   }
 }
 
@@ -548,35 +588,6 @@ export type EventMessagePartRemoved = {
   }
 }
 
-export type PermissionRequest = {
-  id: string
-  sessionID: string
-  permission: string
-  patterns: Array<string>
-  metadata: {
-    [key: string]: unknown
-  }
-  always: Array<string>
-  tool?: {
-    messageID: string
-    callID: string
-  }
-}
-
-export type EventPermissionAsked = {
-  type: "permission.asked"
-  properties: PermissionRequest
-}
-
-export type EventPermissionReplied = {
-  type: "permission.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    reply: "once" | "always" | "reject"
-  }
-}
-
 export type SessionStatus =
   | {
       type: "idle"
@@ -681,14 +692,6 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
-  }
-}
-
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
   }
 }
 
@@ -949,6 +952,9 @@ export type Event =
   | EventServerConnected
   | EventGlobalDisposed
   | EventLspClientDiagnostics
+  | EventPermissionAsked
+  | EventPermissionReplied
+  | EventFileWatcherUpdated
   | EventLspUpdated
   | EventFileEdited
   | EventMessageUpdated
@@ -956,15 +962,12 @@ export type Event =
   | EventMessagePartUpdated
   | EventMessagePartDelta
   | EventMessagePartRemoved
-  | EventPermissionAsked
-  | EventPermissionReplied
   | EventSessionStatus
   | EventSessionIdle
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
   | EventSessionCompacted
-  | EventFileWatcherUpdated
   | EventTodoUpdated
   | EventTuiPromptAppend
   | EventTuiCommandExecute
