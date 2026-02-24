@@ -61,13 +61,23 @@ export namespace LSPClient {
 
     const diagnostics = new Map<string, Diagnostic[]>()
 
+    // files: path -> { version, refCount }
+    // version: LSP document version, incremented on touchFile (>0 means touched)
+    // refCount: number of openFile calls, decremented on closeFile
     const files: {
-      [path: string]: number
+      [path: string]: { version: number; refCount: number }
     } = {}
-    // refCounts: track openFile/closeFile reference counts separately
-    const refCounts: {
-      [path: string]: number
-    } = {}
+
+    const publishDiagnostics = (filePath: string, diagnosticsInfo: Diagnostic[]) => {
+      // Only collect diagnostics for files that have been touched (version > 0)
+      const state = files[filePath]
+      if (!state || state.version === 0) return
+
+      const exists = diagnostics.has(filePath)
+      diagnostics.set(filePath, diagnosticsInfo)
+      if (!exists && input.serverID === "typescript" && diagnosticsInfo.length == 0) return
+      Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
+    }
 
     connection.onNotification("textDocument/publishDiagnostics", (params) => {
       const filePath = Filesystem.normalizePath(fileURLToPath(params.uri))
@@ -75,10 +85,7 @@ export namespace LSPClient {
         path: filePath,
         count: params.diagnostics.length,
       })
-      const exists = diagnostics.has(filePath)
-      diagnostics.set(filePath, params.diagnostics)
-      if (!exists && input.serverID === "typescript") return
-      Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
+      publishDiagnostics(filePath, params.diagnostics)
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {
       l.info("window/workDoneProgress/create", params)
@@ -176,68 +183,74 @@ export namespace LSPClient {
       get connection() {
         return connection
       },
-      notify: {
-        async open(input: { path: string }) {
-          input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-          const text = await Filesystem.readText(input.path)
-          const extension = path.extname(input.path)
-          const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+      // touchFile: open or refresh file for diagnostics, version++
+      async touchFile(touchInput: { path: string }) {
+        touchInput.path = path.isAbsolute(touchInput.path)
+          ? touchInput.path
+          : path.resolve(Instance.directory, touchInput.path)
+        const filePath = touchInput.path
 
-          const version = files[input.path]
-          if (version !== undefined) {
-            l.info("workspace/didChangeWatchedFiles", input)
-            await connection.sendNotification("workspace/didChangeWatchedFiles", {
-              changes: [
-                {
-                  uri: pathToFileURL(input.path).href,
-                  type: 2, // Changed
-                },
-              ],
-            })
+        const state = files[filePath]
+        if (state) {
+          // Already open, send didChange with version++
+          const text = await Filesystem.readText(filePath)
 
-            const next = version + 1
-            files[input.path] = next
-            l.info("textDocument/didChange", {
-              path: input.path,
-              version: next,
-            })
-            await connection.sendNotification("textDocument/didChange", {
-              textDocument: {
-                uri: pathToFileURL(input.path).href,
-                version: next,
-              },
-              contentChanges: [{ text }],
-            })
-            return
-          }
-
-          l.info("workspace/didChangeWatchedFiles", input)
+          l.info("workspace/didChangeWatchedFiles", { path: filePath })
           await connection.sendNotification("workspace/didChangeWatchedFiles", {
             changes: [
               {
-                uri: pathToFileURL(input.path).href,
-                type: 1, // Created
+                uri: pathToFileURL(filePath).href,
+                type: 2, // Changed
               },
             ],
           })
 
-          l.info("textDocument/didOpen", input)
-          diagnostics.delete(input.path)
-          await connection.sendNotification("textDocument/didOpen", {
+          const version = state.version
+          state.version++
+          l.info("textDocument/didChange", { path: filePath, version })
+          await connection.sendNotification("textDocument/didChange", {
             textDocument: {
-              uri: pathToFileURL(input.path).href,
-              languageId,
-              version: 0,
-              text,
+              uri: pathToFileURL(filePath).href,
+              version,
             },
+            contentChanges: [{ text }],
           })
-          files[input.path] = 0
           return
-        },
+        }
+
+        // First open — set state synchronously to avoid concurrent didOpen
+        files[filePath] = { version: 1, refCount: 0 }
+
+        const text = await Filesystem.readText(filePath)
+        const extension = path.extname(filePath)
+        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+
+        l.info("workspace/didChangeWatchedFiles", { path: filePath })
+        await connection.sendNotification("workspace/didChangeWatchedFiles", {
+          changes: [
+            {
+              uri: pathToFileURL(filePath).href,
+              type: 1, // Created
+            },
+          ],
+        })
+
+        l.info("textDocument/didOpen", { path: filePath })
+        diagnostics.delete(filePath)
+        await connection.sendNotification("textDocument/didOpen", {
+          textDocument: {
+            uri: pathToFileURL(filePath).href,
+            languageId,
+            version: 0,
+            text,
+          },
+        })
       },
-      // touchFile: open or refresh file for diagnostics, delegates to notify.open
-      async touchFile(touchInput: { path: string }) {
-        return result.notify.open(touchInput)
+      // notify.open: backward-compatible alias for touchFile
+      notify: {
+        async open(openInput: { path: string }) {
+          return result.touchFile(openInput)
+        },
       },
       // openFile: explicitly open file, refCount++
       async openFile(openInput: { path: string }) {
@@ -246,17 +259,19 @@ export namespace LSPClient {
           : path.resolve(Instance.directory, openInput.path)
         const filePath = openInput.path
 
-        if (refCounts[filePath] !== undefined) {
-          refCounts[filePath]++
+        const state = files[filePath]
+        if (state) {
+          state.refCount++
           return
         }
 
-        refCounts[filePath] = 1
+        // Set state synchronously to avoid concurrent didOpen
+        files[filePath] = { version: 0, refCount: 1 }
+
         const text = await Filesystem.readText(filePath)
         const extension = path.extname(filePath)
         const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-        files[filePath] = 0
         diagnostics.delete(filePath)
         await connection.sendNotification("textDocument/didOpen", {
           textDocument: {
@@ -268,27 +283,26 @@ export namespace LSPClient {
         })
       },
       // closeFile: explicitly close file, refCount--
+      // Only sends didClose if refCount<=0 AND version===0 (never touched by touchFile)
       async closeFile(closeInput: { path: string }) {
         closeInput.path = path.isAbsolute(closeInput.path)
           ? closeInput.path
           : path.resolve(Instance.directory, closeInput.path)
         const filePath = closeInput.path
 
-        if (refCounts[filePath] === undefined) return
-        refCounts[filePath]--
+        const state = files[filePath]
+        if (!state) return
 
-        if (refCounts[filePath] <= 0) {
-          delete refCounts[filePath]
-          // Only close if tracked in files (was opened via notify.open or openFile)
-          if (files[filePath] !== undefined) {
-            delete files[filePath]
-            await connection.sendNotification("textDocument/didClose", {
-              textDocument: {
-                uri: pathToFileURL(filePath).href,
-              },
-            })
-            diagnostics.delete(filePath)
-          }
+        state.refCount--
+
+        if (state.refCount <= 0 && state.version === 0) {
+          delete files[filePath]
+          await connection.sendNotification("textDocument/didClose", {
+            textDocument: {
+              uri: pathToFileURL(filePath).href,
+            },
+          })
+          diagnostics.delete(filePath)
         }
       },
       async documentSymbol(input: { path: string }) {
@@ -330,10 +344,7 @@ export namespace LSPClient {
               }
             })
             diagnosticsFromLSP?.({ path: normalizedPath }).then((diagnosticsInfo) => {
-              const exists = diagnostics.has(normalizedPath)
-              diagnostics.set(normalizedPath, diagnosticsInfo)
-              if (!exists && input.serverID === "typescript") return
-              Bus.publish(Event.Diagnostics, { path: normalizedPath, serverID: input.serverID })
+              publishDiagnostics(normalizedPath, diagnosticsInfo)
             })
           }),
           waitInput.timeout ?? 3000,
