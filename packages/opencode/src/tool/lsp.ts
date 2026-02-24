@@ -51,7 +51,7 @@ export const LspTool = Tool.define("lsp", {
     const relPath = path.relative(Instance.worktree, file)
     const title = `${args.operation} ${relPath}:${args.line}:${args.character}`
 
-    const exists = await Bun.file(file).exists()
+    const exists = await Filesystem.exists(file)
     if (!exists) {
       throw new Error(`File not found: ${file}`)
     }
@@ -100,7 +100,8 @@ export const LspTool = Tool.define("lsp", {
 })
 
 export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
-  description: "Get LSP diagnostics (errors and warnings) for a file. This tool checks the file for compilation errors, type errors, and other issues reported by the language server.",
+  description:
+    "Get LSP diagnostics (errors and warnings) for a file. This tool checks the file for compilation errors, type errors, and other issues reported by the language server.",
   parameters: z.object({
     filePath: z.string().describe("The relative path to the file to check for diagnostics"),
   }),
@@ -158,13 +159,29 @@ export const LspDiagnosticsTool = Tool.define("lsp_diagnostics", {
 })
 
 export const LspFindSymbolTool = Tool.define("lsp_find_symbol", {
-  description: "Search for symbols (classes, functions, methods, variables) using regex patterns. Returns matched symbols with their locations. Use pattern to match symbol name paths like 'MyClass/myMethod'.",
+  description:
+    "Search for symbols (classes, functions, methods, variables) using regex patterns. Returns matched symbols with their locations. Use pattern to match symbol name paths like 'MyClass/myMethod'.",
   parameters: z.object({
     pattern: z.string().describe("Regular expression to match symbol name paths (what to search for)"),
-    search_in: z.string().optional().describe("Where to search (file path, directory, or regex). Empty = search everywhere."),
-    include_body: z.boolean().optional().default(false).describe("Include symbol source code in results (use carefully, increases size)"),
-    include_kinds: z.array(z.number()).optional().describe(`List of LSP symbol kinds to include. Common: 5=class, 6=method, 12=function, 13=variable, 10=enum, 11=interface. Full list: 1=file, 2=module, 3=namespace, 4=package, 5=class, 6=method, 7=property, 8=field, 9=constructor, 10=enum, 11=interface, 12=function, 13=variable, 14=constant, 22=enum member, 23=struct. Empty = include all.`),
-    exclude_kinds: z.array(z.number()).optional().describe("Symbol kinds to exclude (takes precedence over include_kinds)"),
+    search_in: z
+      .string()
+      .optional()
+      .describe("Where to search (file path, directory, or regex). Empty = search everywhere."),
+    include_body: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Include symbol source code in results (use carefully, increases size)"),
+    include_kinds: z
+      .array(z.number())
+      .optional()
+      .describe(
+        `List of LSP symbol kinds to include. Common: 5=class, 6=method, 12=function, 13=variable, 10=enum, 11=interface. Full list: 1=file, 2=module, 3=namespace, 4=package, 5=class, 6=method, 7=property, 8=field, 9=constructor, 10=enum, 11=interface, 12=function, 13=variable, 14=constant, 22=enum member, 23=struct. Empty = include all.`,
+      ),
+    exclude_kinds: z
+      .array(z.number())
+      .optional()
+      .describe("Symbol kinds to exclude (takes precedence over include_kinds)"),
     max_answer_chars: z.number().optional().default(50000).describe("Max result size in characters (default 50000)"),
   }),
   execute: async (args, ctx) => {
