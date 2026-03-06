@@ -2170,40 +2170,9 @@ export namespace LSPServer {
             .then((r) => (Array.isArray(r) ? r : []) as LSPClient.DocumentSymbol[])
             .catch(() => [])
 
-          const fixName = (symbols: LSPClient.DocumentSymbol[]) => {
-            for (const symbol of symbols) {
-              if (symbol.name.includes("(")) {
-                symbol.detail = symbol.name
-                symbol.name = symbol.name.slice(0, symbol.name.indexOf("("))
-              }
-              if (symbol.children) {
-                fixName(symbol.children)
-              }
-            }
-          }
-
-          const assignOverloadIdx = (symbols: LSPClient.DocumentSymbol[]) => {
-            const totalCounts: Record<string, number> = {}
-            const counts: Record<string, number> = {}
-
-            for (const symbol of symbols) {
-              totalCounts[symbol.name] = (totalCounts[symbol.name] || 0) + 1
-              counts[symbol.name] = 0
-            }
-
-            for (const symbol of symbols) {
-              if (totalCounts[symbol.name] > 1) {
-                symbol.overloadIdx = counts[symbol.name]
-                counts[symbol.name]++
-              }
-              if (symbol.children) {
-                assignOverloadIdx(symbol.children)
-              }
-            }
-          }
-
-          fixName(rootSymbols)
-          assignOverloadIdx(rootSymbols)
+          // Note: name normalization (stripping parameter signatures and generic parameters)
+          // and overload index assignment are handled universally in symbols.ts,
+          // so no pre-processing of rootSymbols is needed here.
 
           return rootSymbols
         },

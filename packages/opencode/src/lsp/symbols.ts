@@ -348,9 +348,13 @@ export namespace Index {
       parentIds: string[],
       rows: SymbolRow[],
     ): void {
+      // Normalize names and assign overload indices for this sibling group.
+      normalizeSymbols(symbols)
+
       for (const sym of symbols) {
         const name = sym.name
         const overloadIdx = sym.overloadIdx ?? 0
+
         // Append overload index using # symbol (regex-safe)
         let namePath = parentPath ? `${parentPath}/${name}` : name
         if (overloadIdx > 0) {
@@ -754,6 +758,51 @@ export namespace Index {
 
   // ==================== 工具函数 ====================
 
+  /**
+   * Strip extra encoding from an LSP symbol name to produce a clean, searchable base name.
+   *
+   * LSP servers embed extra information into symbol names that hurts search quality:
+   *   - Parameter signatures: "save(Object, NodeConversion<T>)" → "save"  (Java jdtls, etc.)
+   *   - Angle-bracket generics: "ModelListener<T>", "Map<K,V>"  → bare name  (Java/TS/C#/Rust/C++)
+   *   - Square-bracket generics: "Map[K, V any]"                → bare name  (Go 1.18+, Scala)
+   */
+  function normalizeSymbolName(name: string): string {
+    const parenIdx = name.indexOf("(")
+    if (parenIdx !== -1) name = name.slice(0, parenIdx)
+    // Strip nested angle-bracket generics iteratively (handles Map<String, List<Integer>>)
+    while (/<[^<>]*>/.test(name)) name = name.replace(/<[^<>]*>/g, "")
+    // Strip nested square-bracket generics iteratively (handles Map[K, [V]])
+    while (/\[[^\[\]]*\]/.test(name)) name = name.replace(/\[[^\[\]]*\]/g, "")
+    return name.trim()
+  }
+
+  /**
+   * Normalize a flat list of sibling symbols in-place:
+   *   1. Strip parameter signatures and generic type parameters from each symbol name.
+   *   2. Assign overloadIdx (0-based) only to names that appear more than once,
+   *      so duplicates become  "save" (idx=0), "save#1" (idx=1), "save#2" (idx=2), …
+   *
+   * Mutates elements directly so callers can read sym.name / sym.overloadIdx without
+   * any extra processing.
+   */
+  function normalizeSymbols(symbols: DocumentSymbol[]): void {
+    const totalCounts: Record<string, number> = {}
+    const counts: Record<string, number> = {}
+
+    for (const sym of symbols) {
+      sym.name = normalizeSymbolName(sym.name)
+      totalCounts[sym.name] = (totalCounts[sym.name] ?? 0) + 1
+      counts[sym.name] = 0
+    }
+
+    for (const sym of symbols) {
+      if (totalCounts[sym.name] > 1) {
+        sym.overloadIdx = counts[sym.name]
+        counts[sym.name]++
+      }
+    }
+  }
+
   // Optimize namePathRegex: simple string matches symbol name (last segment of namePath)
   function optimizeNamePathPattern(pattern: string): string {
     if (pattern.includes("/")) return pattern
@@ -779,7 +828,7 @@ export namespace Index {
     ]
     if (regexMarkers.some((marker) => pattern.includes(marker))) return pattern
     const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    // Match symbol name at any position, including overloaded variants (queryMap, queryMap#1, queryMap#2)
+    // Match symbol name at any position, including overloaded variants (e.g. queryMap#1, queryMap#2)
     return `(^|/)${escaped}(#\\d+)?($|/)`
   }
 
@@ -792,14 +841,17 @@ export namespace Index {
     },
     parentPath: string = "",
   ): DocumentSymbol[] {
+    // Normalize names and assign overload indices for this sibling group.
+    normalizeSymbols(symbols)
+
     const result: DocumentSymbol[] = []
     for (const sym of symbols) {
       if (opts.includeKinds?.length && !opts.includeKinds.includes(sym.kind)) continue
       if (opts.excludeKinds?.length && opts.excludeKinds.includes(sym.kind)) continue
 
-      // Build namePath from parent path and symbol name
+      // Build namePath using already-normalized name (normalizeSymbols mutated sym.name)
       let namePath = parentPath ? `${parentPath}/${sym.name}` : sym.name
-      if (sym.overloadIdx && sym.overloadIdx > 0) {
+      if ((sym.overloadIdx ?? 0) > 0) {
         namePath += `#${sym.overloadIdx}`
       }
       if (opts.namePathRegex && !opts.namePathRegex.test(namePath)) continue
