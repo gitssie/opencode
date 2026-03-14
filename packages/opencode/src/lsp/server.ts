@@ -116,7 +116,7 @@ export namespace LSPServer {
     ),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      const tsserver = Module.resolve("typescript/lib/tsserver.js", Instance.directory)
+      const tsserver = Module.resolve("typescript/lib/tsserver.js", root)
       if (!tsserver) {
         log.info("typescript server not found", { root, tsserver })
         return
@@ -528,7 +528,7 @@ export namespace LSPServer {
     ]),
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
     async spawn(root) {
-      const eslint = Module.resolve("eslint", Instance.directory)
+      const eslint = Module.resolve("eslint", root)
       if (!eslint) return
       log.info("spawning eslint server")
       const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
@@ -1566,7 +1566,7 @@ export namespace LSPServer {
     root: NearestRoot(["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]),
     async spawn(root) {
       log.info("spawn astro", { root })
-      const tsserver = Module.resolve("typescript/lib/tsserver.js", Instance.directory)
+      const tsserver = Module.resolve("typescript/lib/tsserver.js", root)
       if (!tsserver) {
         log.info("typescript not found, required for Astro language server")
         return
