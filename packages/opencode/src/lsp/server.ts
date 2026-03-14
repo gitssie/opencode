@@ -1614,29 +1614,18 @@ export namespace LSPServer {
 
   export const JDTLS: Info = {
     id: "jdtls",
+    // For multi-module Maven/Gradle projects, find the topmost project root within workspace
     root: async (file) => {
-      // Without exclusions, NearestRoot defaults to instance directory so we can't
-      // distinguish between a) no project found and b) project found at instance dir.
-      // So we can't choose the root from (potential) monorepo markers first.
-      // Look for potential subproject markers first while excluding potential monorepo markers.
-      const settingsMarkers = ["settings.gradle", "settings.gradle.kts"]
-      const gradleMarkers = ["gradlew", "gradlew.bat"]
-      const exclusionsForMonorepos = gradleMarkers.concat(settingsMarkers)
+      const markers = ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"]
 
-      const [projectRoot, wrapperRoot, settingsRoot] = await Promise.all([
-        NearestRoot(
-          ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"],
-          exclusionsForMonorepos,
-        )(file),
-        NearestRoot(gradleMarkers, settingsMarkers)(file),
-        NearestRoot(settingsMarkers)(file),
-      ])
-
-      // If projectRoot is undefined we know we are in a monorepo or no project at all.
-      // So can safely fall through to the other roots
-      if (projectRoot) return projectRoot
-      if (wrapperRoot) return wrapperRoot
-      if (settingsRoot) return settingsRoot
+      // Search upward from file to find topmost root within workspace
+      const found = await Filesystem.upLast({
+        targets: markers,
+        start: path.dirname(file),
+        stop: Instance.directory,
+      })
+      const root = found ? Filesystem.normalizePath(path.dirname(found)) : undefined
+      return root
     },
     extensions: [".java"],
     async spawn(root) {
