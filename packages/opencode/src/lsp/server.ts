@@ -569,7 +569,7 @@ export namespace LSPServer {
 
         const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
         await Process.run([npmCmd, "install"], { cwd: finalPath })
-        await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
+        await Process.run([npmCmd, "run", "compile:server"], { cwd: finalPath })
 
         log.info("installed VS Code ESLint server", { serverPath })
       }
