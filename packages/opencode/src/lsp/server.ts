@@ -3,7 +3,6 @@ import path from "path"
 import { Global } from "../global"
 import { Log } from "../util/log"
 import { BunProc } from "../bun"
-import { $ } from "bun"
 import { text } from "node:stream/consumers"
 import fs from "fs/promises"
 import { Filesystem } from "../util/filesystem"
@@ -991,17 +990,13 @@ export namespace LSPServer {
 
       // Try to detect uv-managed Python first
       if (which("uv")) {
-        try {
-          const uvPython = await $`uv run which python`.cwd(root).quiet().nothrow()
-          if (uvPython.exitCode === 0) {
-            const pythonPath = uvPython.text().trim()
-            if (pythonPath && (await Filesystem.exists(pythonPath))) {
-              initialization["pythonPath"] = pythonPath
-              log.info("detected uv-managed python", { pythonPath })
-            }
+        const uvPython = await run(["uv", "run", "which", "python"], { cwd: root })
+        if (uvPython.code === 0) {
+          const pythonPath = uvPython.stdout.toString().trim()
+          if (pythonPath && (await Filesystem.exists(pythonPath))) {
+            initialization["pythonPath"] = pythonPath
+            log.info("detected uv-managed python", { pythonPath })
           }
-        } catch (err) {
-          // Fall through to standard venv detection
         }
       }
 
@@ -1724,8 +1719,8 @@ export namespace LSPServer {
       let userJavaHomePath: string | undefined
       const systemJava = which("java")
       if (systemJava) {
-        const javaVersionResult = await $`java -version`.quiet().nothrow()
-        const versionMatch = /"(\d+)(?:\.\d+)*"/.exec(javaVersionResult.stderr.toString())
+        const javaVersion = await run(["java", "-version"])
+        const versionMatch = /"(\d+)(?:\.\d+)*"/.exec(javaVersion.stderr.toString())
         const majorVersion = versionMatch ? parseInt(versionMatch[1]) : 0
         if (majorVersion >= 21) {
           userJavaPath = systemJava
@@ -1755,7 +1750,7 @@ export namespace LSPServer {
         // Only download if archive doesn't exist
         if (!(await pathExists(archivePath))) {
           log.info("Downloading vscode-java for JDTLS", { url: config.url })
-          await $`curl -L -o ${archivePath} ${config.url}`.quiet().nothrow()
+          await run(["curl", "-L", "-o", archivePath, config.url])
           log.info("Downloaded vscode-java")
         }
 
