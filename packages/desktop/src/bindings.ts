@@ -19,6 +19,10 @@ export const commands = {
 	wslPath: (path: string, mode: "windows" | "linux" | null) => __TAURI_INVOKE<string>("wsl_path", { path, mode }),
 	resolveAppPath: (appName: string) => __TAURI_INVOKE<string | null>("resolve_app_path", { appName }),
 	openPath: (path: string, appName: string | null) => __TAURI_INVOKE<null>("open_path", { path, appName }),
+	removeMcp: (name: string) => __TAURI_INVOKE<null>("remove_mcp", { name }),
+	listSkills: () => __TAURI_INVOKE<SkillEntry[]>("list_skills"),
+	installSkill: (name: string, files: SkillFile[]) => __TAURI_INVOKE<null>("install_skill", { name, files }),
+	removeSkill: (name: string) => __TAURI_INVOKE<null>("remove_skill", { name }),
 };
 
 /** Events */
@@ -47,6 +51,9 @@ export type WslConfig = {
 	};
 
 export type WslPathMode = "windows" | "linux";
+
+export type SkillEntry = { name: string; path: string };
+export type SkillFile = { path: string; content: string };
 
 /* Tauri Specta runtime */
 function makeEvent<T>(name: string) {

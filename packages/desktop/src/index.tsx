@@ -117,6 +117,22 @@ const createPlatform = (): Platform => {
       await commands.openPath(path, app ?? null)
     },
 
+    async removeMcp(name: string) {
+      await commands.removeMcp(name)
+    },
+
+    async listSkills() {
+      return commands.listSkills()
+    },
+
+    async installSkill(name, files) {
+      await commands.installSkill(name, files)
+    },
+
+    async removeSkill(name) {
+      await commands.removeSkill(name)
+    },
+
     back() {
       window.history.back()
     },

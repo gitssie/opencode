@@ -87,6 +87,18 @@ export type Platform = {
 
   /** Read image from clipboard (desktop only) */
   readClipboardImage?(): Promise<File | null>
+
+  /** Remove MCP server from global config file (desktop only) */
+  removeMcp?(name: string): Promise<void>
+
+  /** List globally installed skills (desktop only) */
+  listSkills?(): Promise<{ name: string; path: string }[]>
+
+  /** Install a skill from a hub (desktop only) */
+  installSkill?(name: string, files: { path: string; content: string }[]): Promise<void>
+
+  /** Remove an installed global skill (desktop only) */
+  removeSkill?(name: string): Promise<void>
 }
 
 export type DisplayBackend = "auto" | "wayland"

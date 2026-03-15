@@ -524,7 +524,8 @@ export const SettingsGeneral: Component = () => {
           }}
         </Show>*/}
 
-        <UpdatesSection />
+        {/* UpdatesSection hidden - not applicable for fork */}
+        {/* <UpdatesSection /> */}
 
         <Show when={linux()}>
           {(_) => {

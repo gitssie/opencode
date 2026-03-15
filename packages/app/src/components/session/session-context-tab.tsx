@@ -322,17 +322,6 @@ export function SessionContextTab() {
             </div>
           )}
         </Show>
-
-        <div class="flex flex-col gap-2">
-          <div class="text-12-regular text-text-weak">{language.t("context.rawMessages.title")}</div>
-          <Accordion multiple>
-            <For each={messages()}>
-              {(message) => (
-                <RawMessage message={message} getParts={getParts} onRendered={restoreScroll} time={formatter().time} />
-              )}
-            </For>
-          </Accordion>
-        </div>
       </div>
     </ScrollView>
   )

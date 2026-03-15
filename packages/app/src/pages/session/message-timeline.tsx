@@ -246,7 +246,11 @@ export function MessageTimeline(props: {
     if (!id) return idle
     return sync.data.session_status[id] ?? idle
   })
-  const working = createMemo(() => !!pending() || sessionStatus().type !== "idle")
+  const working = createMemo(() => {
+    const status = sessionStatus()
+    if (status.type === "idle") return false
+    return !!pending() || status.type === "busy" || status.type === "retry"
+  })
   const tint = createMemo(() => messageAgentColor(sessionMessages(), sync.data.agent))
 
   const [slot, setSlot] = createStore({

@@ -298,6 +298,101 @@ fn wsl_path(path: String, mode: Option<WslPathMode>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+#[derive(serde::Serialize, specta::Type)]
+struct SkillEntry {
+    name: String,
+    path: String,
+}
+
+fn skills_dir() -> Result<std::path::PathBuf, String> {
+    dirs::config_dir()
+        .ok_or("Failed to determine config directory".to_string())
+        .map(|d| d.join("opencode").join("skills"))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn list_skills() -> Result<Vec<SkillEntry>, String> {
+    let dir = skills_dir()?;
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut entries = vec![];
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("Failed to read skills dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("Failed to read dir entry: {e}"))?;
+        let skill_dir = entry.path();
+        if !skill_dir.is_dir() {
+            continue;
+        }
+        let skill_file = skill_dir.join("SKILL.md");
+        if skill_file.exists() {
+            let name = skill_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            entries.push(SkillEntry {
+                name,
+                path: skill_file.to_string_lossy().to_string(),
+            });
+        }
+    }
+    Ok(entries)
+}
+
+#[derive(serde::Deserialize, specta::Type)]
+struct SkillFile {
+    path: String,
+    content: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+fn install_skill(name: String, files: Vec<SkillFile>) -> Result<(), String> {
+    let dir = skills_dir()?.join(&name);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create skill dir: {e}"))?;
+    for file in files {
+        let dest = dir.join(&file.path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {e}"))?;
+        }
+        std::fs::write(&dest, &file.content).map_err(|e| format!("Failed to write file: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn remove_skill(name: String) -> Result<(), String> {
+    let dir = skills_dir()?.join(&name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove skill dir: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn remove_mcp(name: String) -> Result<(), String> {
+    let config_dir = dirs::config_dir()
+        .ok_or("Failed to determine config directory")?
+        .join("opencode");
+    let path = config_dir.join("config.json");
+
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+    let mut json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
+
+    if let Some(mcp) = json.get_mut("mcp").and_then(|v| v.as_object_mut()) {
+        mcp.remove(&name);
+    }
+
+    let out = serde_json::to_string_pretty(&json).map_err(|e| format!("Failed to serialize config: {e}"))?;
+    std::fs::write(&path, out).map_err(|e| format!("Failed to write config: {e}"))?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = make_specta_builder();
@@ -387,7 +482,11 @@ fn make_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             check_app_exists,
             wsl_path,
             resolve_app_path,
-            open_path
+            open_path,
+            remove_mcp,
+            list_skills,
+            install_skill,
+            remove_skill
         ])
         .events(tauri_specta::collect_events![
             LoadingWindowComplete,

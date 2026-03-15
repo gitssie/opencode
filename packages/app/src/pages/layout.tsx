@@ -90,6 +90,7 @@ import {
 } from "./layout/sidebar-workspace"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+import { NewSidebar } from "./layout/sidebar-new"
 
 export default function Layout(props: ParentProps) {
   const [store, setStore, , ready] = persisted(
@@ -993,13 +994,6 @@ export default function Layout(props: ParentProps) {
   command.register("layout", () => {
     const commands: CommandOption[] = [
       {
-        id: "sidebar.toggle",
-        title: language.t("command.sidebar.toggle"),
-        category: language.t("command.category.view"),
-        keybind: "mod+b",
-        onSelect: () => layout.sidebar.toggle(),
-      },
-      {
         id: "project.open",
         title: language.t("command.project.open"),
         category: language.t("command.category.project"),
@@ -1171,6 +1165,10 @@ export default function Layout(props: ParentProps) {
 
   function openSettings() {
     dialog.show(() => <DialogSettings />)
+  }
+
+  function openSkills() {
+    dialog.show(() => <DialogSettings tab="skills" />)
   }
 
   function projectRoot(directory: string) {
@@ -2257,8 +2255,6 @@ export default function Layout(props: ParentProps) {
       settingsLabel={() => language.t("sidebar.settings")}
       settingsKeybind={() => command.keybind("settings.open")}
       onOpenSettings={openSettings}
-      helpLabel={() => language.t("sidebar.help")}
-      onOpenHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}
       renderPanel={() =>
         mobile ? (
           <SidebarPanel project={currentProject} mobile />
@@ -2289,35 +2285,36 @@ export default function Layout(props: ParentProps) {
               ref={(el) => {
                 setState("nav", el)
               }}
-              onMouseEnter={() => {
-                disarm()
-              }}
-              onMouseLeave={() => {
-                aim.reset()
-                if (!sidebarHovering()) return
-
-                arm()
-              }}
             >
-              <div class="@container w-full h-full contain-strict">{sidebarContent()}</div>
-              <Show when={layout.sidebar.opened()}>
-                <div onPointerDown={() => setState("sizing", true)}>
-                  <ResizeHandle
-                    direction="horizontal"
-                    size={layout.sidebar.width()}
-                    min={244}
-                    max={typeof window === "undefined" ? 1000 : window.innerWidth * 0.3 + 64}
-                    collapseThreshold={244}
-                    onResize={(w) => {
-                      setState("sizing", true)
-                      if (sizet !== undefined) clearTimeout(sizet)
-                      sizet = window.setTimeout(() => setState("sizing", false), 120)
-                      layout.sidebar.resize(w)
-                    }}
-                    onCollapse={layout.sidebar.close}
-                  />
-                </div>
-              </Show>
+              <NewSidebar
+                currentDir={currentDir}
+                projects={projects}
+                sortNow={sortNow}
+                onOpenProject={chooseProject}
+                onOpenSettings={openSettings}
+                onOpenSkills={openSkills}
+                navigateToProject={navigateToProject}
+                navigateToNewSession={(dir) => navigateWithSidebarReset(`/${base64Encode(dir)}/session`)}
+                archiveSession={archiveSession}
+                closeProject={closeProject}
+                showEditProjectDialog={showEditProjectDialog}
+              />
+              <div onPointerDown={() => setState("sizing", true)}>
+                <ResizeHandle
+                  direction="horizontal"
+                  size={layout.sidebar.width()}
+                  min={244}
+                  max={typeof window === "undefined" ? 1000 : window.innerWidth * 0.3 + 64}
+                  collapseThreshold={244}
+                  onResize={(w) => {
+                    setState("sizing", true)
+                    if (sizet !== undefined) clearTimeout(sizet)
+                    sizet = window.setTimeout(() => setState("sizing", false), 120)
+                    layout.sidebar.resize(w)
+                  }}
+                  onCollapse={layout.sidebar.close}
+                />
+              </div>
             </nav>
 
             <div
@@ -2359,12 +2356,12 @@ export default function Layout(props: ParentProps) {
                   !state.sizing,
               }}
               style={{
-                "--main-left": layout.sidebar.opened() ? `${Math.max(layout.sidebar.width(), 244)}px` : "4rem",
+                "--main-left": `${Math.max(layout.sidebar.width(), 244)}px`,
               }}
             >
               <main
                 classList={{
-                  "size-full overflow-x-hidden flex flex-col items-start contain-strict border-t border-border-weak-base bg-background-base xl:border-l xl:rounded-tl-[12px]": true,
+                  "size-full overflow-x-hidden flex flex-col items-start contain-strict border-t border-border-weak-base bg-background-base xl:border-l": true,
                 }}
               >
                 <Show when={!autoselecting()} fallback={<div class="size-full" />}>

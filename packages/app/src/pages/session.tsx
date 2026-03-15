@@ -1361,9 +1361,14 @@ export default function Page() {
     })
 
   const busy = (sessionID: string) => {
-    if ((sync.data.session_status[sessionID] ?? { type: "idle" as const }).type !== "idle") return true
-    return (sync.data.message[sessionID] ?? []).some(
-      (item) => item.role === "assistant" && typeof item.time.completed !== "number",
+    const status = sync.data.session_status[sessionID]
+    if (!status || status.type === "idle") return false
+    return (
+      (sync.data.message[sessionID] ?? []).some(
+        (item) => item.role === "assistant" && typeof item.time.completed !== "number",
+      ) ||
+      status.type === "busy" ||
+      status.type === "retry"
     )
   }
 
@@ -1577,7 +1582,7 @@ export default function Page() {
       .map((item) => ({ id: item.id, text: line(item.id) }))
   })
 
-  const actions = { fork, revert }
+  const actions = { revert }
 
   createEffect(() => {
     const sessionID = params.id
