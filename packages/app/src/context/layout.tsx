@@ -255,6 +255,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         handoff: {
           tabs: undefined as TabHandoff | undefined,
         },
+        fileTree: undefined as { opened: boolean; width: number; tab: "changes" | "all" } | undefined,
       }),
     )
 
