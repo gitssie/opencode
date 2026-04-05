@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import crypto from "crypto"
 import path from "path"
-import { mkdir, writeFile, symlink, stat } from "fs/promises"
+import { lstat, mkdir, readlink, rm, symlink, writeFile } from "fs/promises"
 import { Log } from "../util/log"
 import { Global } from "../global"
 
@@ -183,11 +183,16 @@ export class DuckDBIPCClient {
   private async prepare(): Promise<void> {
     await mkdir(this.serverDir, { recursive: true })
 
-    const link = await stat(this.nodeModulesLink)
-      .then(() => true)
-      .catch(() => false)
+    const link = await lstat(this.nodeModulesLink).catch(() => undefined)
     if (!link) {
       await symlink(this.nodeModulesTarget, this.nodeModulesLink, "junction")
+    } else {
+      const target = link.isSymbolicLink() ? await readlink(this.nodeModulesLink).catch(() => undefined) : undefined
+      const resolved = target ? path.resolve(this.serverDir, target) : undefined
+      if (target !== this.nodeModulesTarget && resolved !== this.nodeModulesTarget) {
+        await rm(this.nodeModulesLink, { recursive: true, force: true })
+        await symlink(this.nodeModulesTarget, this.nodeModulesLink, "junction")
+      }
     }
 
     await writeFile(this.serverScriptPath, SERVER_CODE)

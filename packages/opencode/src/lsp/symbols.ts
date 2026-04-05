@@ -19,7 +19,7 @@ export namespace Index {
   const log = Log.create({ service: "lsp.index" })
 
   interface State {
-    client: DuckDBIPCClient
+    client?: DuckDBIPCClient
     counter: number
     rebuildInProgress: boolean
     buildingClients: Map<string, Promise<{ indexed: number; skipped: number; errors: number }>>
@@ -38,11 +38,7 @@ export namespace Index {
     Effect.gen(function* () {
       const live = yield* InstanceState.make<State>((ctx) =>
         Effect.gen(function* () {
-          const client = new DuckDBIPCClient(ctx.directory)
-          yield* Effect.promise(() => client.start())
-
           const state: State = {
-            client,
             counter: 1,
             rebuildInProgress: false,
             buildingClients: new Map(),
@@ -55,7 +51,7 @@ export namespace Index {
               for (const timer of state.flushTimers.values()) {
                 clearTimeout(timer)
               }
-              await client.shutdown().catch(() => {})
+              await state.client?.shutdown().catch(() => {})
             }),
           )
 
@@ -257,7 +253,11 @@ export namespace Index {
 
   async function getSharedClient(): Promise<DuckDBIPCClient> {
     const s = await getState()
-    return s.client
+    if (s.client) return s.client
+    const client = new DuckDBIPCClient(Instance.directory)
+    await client.start()
+    s.client = client
+    return client
   }
 
   export class DuckDBIndex implements SymbolIndex {
