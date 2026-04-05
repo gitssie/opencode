@@ -8,6 +8,7 @@ import type {
   DocumentSymbol as VSCodeDocumentSymbol,
 } from "vscode-languageserver-types"
 import { Log } from "../util/log"
+import { Process } from "../util/process"
 import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
 import type { LSPServer } from "./server"
@@ -359,7 +360,7 @@ export namespace LSPClient {
         l.info("shutting down")
         connection.end()
         connection.dispose()
-        input.server.process.kill()
+        await Process.stop(input.server.process)
         l.info("shutdown")
       },
     }

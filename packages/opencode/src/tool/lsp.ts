@@ -202,7 +202,7 @@ export const LspFindSymbolTool = Tool.define("lsp_find_symbol", {
       excludeKinds: args.exclude_kinds,
     })
 
-    const prettyResult = await LSP.pretty(symbols, {
+    const prettyResult = await LSP.Format.pretty(symbols, {
       kind: true,
       location: true,
       includeBody: args.include_body,

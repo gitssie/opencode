@@ -91,7 +91,7 @@ const SearchSymbolsCommand = cmd({
         includeKinds: args["include-kinds"]?.map(Number),
         excludeKinds: args["exclude-kinds"]?.map(Number),
       })
-      const prettyResults = await LSP.pretty(results, {
+      const prettyResults = await LSP.Format.pretty(results, {
         kind: true,
         location: true,
         includeBody: args["include-body"],

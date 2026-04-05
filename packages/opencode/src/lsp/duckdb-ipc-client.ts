@@ -4,9 +4,9 @@ import path from "path"
 import { mkdir, writeFile, symlink, stat } from "fs/promises"
 import { Log } from "../util/log"
 import { Global } from "../global"
-import { BunProc } from "../bun"
 
 const log = Log.create({ service: "lsp.duckdb-ipc" })
+const bun = process.execPath
 
 export interface ColumnDef {
   name: string
@@ -119,7 +119,10 @@ process.stdin.on("data", async (chunk) => {
 
 export class DuckDBIPCClient {
   private proc: ChildProcessWithoutNullStreams | null = null
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }>()
+  private pending = new Map<
+    number,
+    { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }
+  >()
   private id = 0
   private buffer = ""
   private dbPath: string
@@ -140,7 +143,7 @@ export class DuckDBIPCClient {
     // Ensure @duckdb/node-api is installed in Global.Path.bin
     const duckdbModulePath = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api")
     if (!(await Bun.file(path.join(duckdbModulePath, "package.json")).exists())) {
-      await Bun.spawn([BunProc.which(), "install", "@duckdb/node-api"], {
+      await Bun.spawn([bun, "install", "@duckdb/node-api"], {
         cwd: Global.Path.bin,
         env: {
           ...process.env,
@@ -153,25 +156,27 @@ export class DuckDBIPCClient {
     const serverDir = path.join(Global.Path.bin, "lsp-symbols-index")
     await mkdir(serverDir, { recursive: true })
     this.serverScriptPath = path.join(serverDir, "server.js")
-    
+
     // Create symlink to node_modules for isolated working directory
     const nodeModulesLink = path.join(serverDir, "node_modules")
     const nodeModulesTarget = path.join(Global.Path.bin, "node_modules")
-    const linkExists = await stat(nodeModulesLink).then(() => true).catch(() => false)
+    const linkExists = await stat(nodeModulesLink)
+      .then(() => true)
+      .catch(() => false)
     if (!linkExists) {
       await symlink(nodeModulesTarget, nodeModulesLink, "junction")
     }
-    
+
     // Write the server code
     await writeFile(this.serverScriptPath, SERVER_CODE)
 
-    log.info("spawning duckdb server", { 
-      bunPath: BunProc.which(), 
+    log.info("spawning duckdb server", {
+      bunPath: bun,
       serverScript: this.serverScriptPath,
-      cwd: serverDir 
+      cwd: serverDir,
     })
 
-    this.proc = spawn(BunProc.which(), ["run", this.serverScriptPath], {
+    this.proc = spawn(bun, ["run", this.serverScriptPath], {
       cwd: serverDir,
       env: {
         ...process.env,
