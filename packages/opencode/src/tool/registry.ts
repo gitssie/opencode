@@ -24,7 +24,7 @@ import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
-import { LspTool } from "./lsp"
+import { LspDiagnosticsTool, LspFindSymbolTool, LspTool } from "./lsp"
 import { Truncate } from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "../util/glob"
@@ -151,6 +151,8 @@ export namespace ToolRegistry {
       const skill = yield* build(SkillTool)
       const patch = yield* build(ApplyPatchTool)
       const lsp = yield* build(LspTool)
+      const lsp_diagnostics = yield* build(LspDiagnosticsTool)
+      const lsp_find_symbol = yield* build(LspFindSymbolTool)
       const batch = yield* build(BatchTool)
       const plan = yield* build(PlanExitTool)
 
@@ -174,6 +176,8 @@ export namespace ToolRegistry {
           code,
           skill,
           patch,
+          lsp_diagnostics,
+          lsp_find_symbol,
           ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [lsp] : []),
           ...(cfg.experimental?.batch_tool === true ? [batch] : []),
           ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [plan] : []),
