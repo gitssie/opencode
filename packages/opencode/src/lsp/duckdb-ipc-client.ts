@@ -18,15 +18,23 @@ interface RPCRequest {
   jsonrpc: "2.0"
   id: number
   method: string
-  params?: any
+  params?: unknown
 }
 
 interface RPCResponse {
   jsonrpc: "2.0"
   id: number
-  result?: any
+  result?: unknown
   error?: { code: number; message: string }
 }
+
+interface Pending {
+  resolve: (value: unknown) => void
+  reject: (error: unknown) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+type Params = Record<string, unknown>
 
 // Server code as string - will be written to temp file at runtime
 // This avoids @duckdb/node-api dependency in main process compilation
@@ -119,83 +127,129 @@ process.stdin.on("data", async (chunk) => {
 
 export class DuckDBIPCClient {
   private proc: ChildProcessWithoutNullStreams | null = null
-  private pending = new Map<
-    number,
-    { resolve: (v: any) => void; reject: (e: any) => void; timer: ReturnType<typeof setTimeout> }
-  >()
+  private pending = new Map<number, Pending>()
   private id = 0
   private buffer = ""
   private dbPath: string
-  private serverScriptPath: string | null = null
   private started = false
   private restartCount = 0
   private maxRestarts = 3
   private timeout = 30000
+
+  private get serverDir() {
+    return path.join(Global.Path.bin, "lsp-symbols-index")
+  }
+
+  private get serverScriptPath() {
+    return path.join(this.serverDir, "server.js")
+  }
+
+  private get nodeModulesLink() {
+    return path.join(this.serverDir, "node_modules")
+  }
+
+  private get nodeModulesTarget() {
+    return path.join(Global.Path.bin, "node_modules")
+  }
+
+  private fail(err: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(err)
+    }
+    this.pending.clear()
+    this.started = false
+    this.buffer = ""
+  }
 
   constructor(instanceDir: string) {
     const rootHash = crypto.createHash("md5").update(instanceDir).digest("hex")
     this.dbPath = path.join(Global.Path.bin, "lsp-symbols-index", rootHash, "symbols.duckdb")
   }
 
-  async start(): Promise<void> {
-    if (this.started) return
+  private async install(): Promise<void> {
+    const mod = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api", "package.json")
+    if (await Bun.file(mod).exists()) return
 
-    // Ensure @duckdb/node-api is installed in Global.Path.bin
-    const duckdbModulePath = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api")
-    if (!(await Bun.file(path.join(duckdbModulePath, "package.json")).exists())) {
-      await Bun.spawn([bun, "install", "@duckdb/node-api"], {
-        cwd: Global.Path.bin,
-        env: {
-          ...process.env,
-          BUN_BE_BUN: "1",
-        },
-      }).exited
-    }
+    await Bun.spawn([bun, "install", "@duckdb/node-api"], {
+      cwd: Global.Path.bin,
+      env: {
+        ...process.env,
+        BUN_BE_BUN: "1",
+      },
+    }).exited
+  }
 
-    // Write server script to isolated directory
-    const serverDir = path.join(Global.Path.bin, "lsp-symbols-index")
-    await mkdir(serverDir, { recursive: true })
-    this.serverScriptPath = path.join(serverDir, "server.js")
+  private async prepare(): Promise<void> {
+    await mkdir(this.serverDir, { recursive: true })
 
-    // Create symlink to node_modules for isolated working directory
-    const nodeModulesLink = path.join(serverDir, "node_modules")
-    const nodeModulesTarget = path.join(Global.Path.bin, "node_modules")
-    const linkExists = await stat(nodeModulesLink)
+    const link = await stat(this.nodeModulesLink)
       .then(() => true)
       .catch(() => false)
-    if (!linkExists) {
-      await symlink(nodeModulesTarget, nodeModulesLink, "junction")
+    if (!link) {
+      await symlink(this.nodeModulesTarget, this.nodeModulesLink, "junction")
     }
 
-    // Write the server code
     await writeFile(this.serverScriptPath, SERVER_CODE)
+  }
 
-    log.info("spawning duckdb server", {
-      bunPath: bun,
-      serverScript: this.serverScriptPath,
-      cwd: serverDir,
-    })
-
-    this.proc = spawn(bun, ["run", this.serverScriptPath], {
-      cwd: serverDir,
+  private launch(): ChildProcessWithoutNullStreams {
+    const proc = spawn(bun, ["run", this.serverScriptPath], {
+      cwd: this.serverDir,
       env: {
         ...process.env,
         BUN_BE_BUN: "1",
       },
     })
 
-    if (!this.proc) {
-      throw new Error("Failed to spawn DuckDB server process")
-    }
+    log.info("duckdb server spawned", { pid: proc.pid })
+    return proc
+  }
 
-    log.info("duckdb server spawned", { pid: this.proc.pid })
+  async start(): Promise<void> {
+    if (this.started) return
 
+    await this.install()
+    await this.prepare()
+
+    log.info("spawning duckdb server", {
+      bunPath: bun,
+      serverScript: this.serverScriptPath,
+      cwd: this.serverDir,
+    })
+
+    this.proc = this.launch()
+
+    this.setupProc()
     this.setupReader()
     this.setupErrorReader()
 
     await this.request("init", { dbPath: this.dbPath })
     this.started = true
     this.restartCount = 0
+  }
+
+  private setupProc(): void {
+    const proc = this.proc
+    if (!proc) return
+
+    const fail = (err: Error) => {
+      if (this.proc !== proc) return
+      this.proc = null
+      this.fail(err)
+    }
+
+    proc.once("error", (err) => {
+      fail(err instanceof Error ? err : new Error(String(err)))
+    })
+
+    proc.once("close", (code, signal) => {
+      const msg =
+        code === null
+          ? `DuckDB server closed with signal ${signal ?? "unknown"}`
+          : `DuckDB server closed with code ${code}`
+      fail(new Error(msg))
+    })
   }
 
   private setupReader(): void {
@@ -260,7 +314,7 @@ export class DuckDBIPCClient {
     }
   }
 
-  private request<T>(method: string, params?: any): Promise<T> {
+  private request<T>(method: string, params?: unknown): Promise<T> {
     return new Promise(async (resolve, reject) => {
       try {
         await this.ensureRunning()
@@ -279,7 +333,11 @@ export class DuckDBIPCClient {
         reject(new Error(`IPC timeout: ${method}`))
       }, this.timeout)
 
-      this.pending.set(id, { resolve, reject, timer })
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timer,
+      })
 
       const request: RPCRequest = {
         jsonrpc: "2.0",
@@ -302,15 +360,15 @@ export class DuckDBIPCClient {
     await this.request("exec", { sql })
   }
 
-  async query<T>(sql: string, params?: Record<string, any>): Promise<T[]> {
+  async query<T>(sql: string, params?: Params): Promise<T[]> {
     return this.request<T[]>("query", { sql, params })
   }
 
-  async appendRows(table: string, schema: string, columns: ColumnDef[], rows: any[][]): Promise<void> {
+  async appendRows(table: string, schema: string, columns: ColumnDef[], rows: unknown[][]): Promise<void> {
     await this.request("appendRows", { table, schema, columns, rows })
   }
 
-  async delete(sql: string, params?: Record<string, any>): Promise<void> {
+  async delete(sql: string, params?: Params): Promise<void> {
     await this.request("delete", { sql, params })
   }
 
@@ -318,11 +376,7 @@ export class DuckDBIPCClient {
     if (!this.proc) return
 
     // Cancel all pending requests first (this unblocks any waiters)
-    for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer)
-      pending.reject(new Error("Client shutdown"))
-    }
-    this.pending.clear()
+    this.fail(new Error("Client shutdown"))
 
     // Try to send graceful shutdown
     try {
@@ -336,6 +390,7 @@ export class DuckDBIPCClient {
       this.proc = null
     }
     this.started = false
+    this.buffer = ""
   }
 
   isStarted(): boolean {

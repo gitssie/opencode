@@ -119,6 +119,8 @@ const lsp = Layer.succeed(
     init: () => Effect.void,
     status: () => Effect.succeed([]),
     hasClients: () => Effect.succeed(false),
+    openFile: () => Effect.void,
+    closeFile: () => Effect.void,
     touchFile: () => Effect.void,
     diagnostics: () => Effect.succeed({}),
     hover: () => Effect.succeed(undefined),
@@ -130,6 +132,9 @@ const lsp = Layer.succeed(
     prepareCallHierarchy: () => Effect.succeed([]),
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
+    rebuildIndex: () => Effect.succeed({ indexed: 0, skipped: 0, errors: 0 }),
+    searchSymbols: () => Effect.succeed([]),
+    getSymbols: () => Effect.succeed(new Map()),
   }),
 )
 

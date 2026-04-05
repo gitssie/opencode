@@ -28,6 +28,45 @@ export namespace LSPClient {
 
   export type DocumentSymbol = VSCodeDocumentSymbol & { overloadIdx?: number }
 
+  interface File {
+    version: number
+    refs: number
+  }
+
+  interface Methods {
+    diagnostics?: (input: { path: string }) => Promise<Diagnostic[]>
+    documentSymbol?: (input: { path: string; url?: URL }) => Promise<DocumentSymbol[]>
+    ready?: () => Promise<void>
+  }
+
+  interface Initialize extends Record<string, unknown> {
+    rootUri: string
+    processId: number | undefined
+    rootPath: string
+    workspaceFolders: Array<{ name: string; uri: string }>
+    initializationOptions: Record<string, unknown>
+    capabilities: {
+      window: {
+        workDoneProgress: boolean
+      }
+      workspace: {
+        configuration: boolean
+        didChangeWatchedFiles: {
+          dynamicRegistration: boolean
+        }
+      }
+      textDocument: {
+        synchronization: {
+          didOpen: boolean
+          didChange: boolean
+        }
+        publishDiagnostics: {
+          versionSupport: boolean
+        }
+      }
+    }
+  }
+
   export const InitializeError = NamedError.create(
     "LSPInitializeError",
     z.object({
@@ -55,23 +94,19 @@ export namespace LSPClient {
     const l = log.clone().tag("serverID", input.serverID)
     l.info("starting client")
 
+    const abs = (file: string) =>
+      Filesystem.normalizePath(path.isAbsolute(file) ? file : path.resolve(Instance.directory, file))
+
     const connection = createMessageConnection(
-      new StreamMessageReader(input.server.process.stdout as any),
-      new StreamMessageWriter(input.server.process.stdin as any),
+      new StreamMessageReader(input.server.process.stdout),
+      new StreamMessageWriter(input.server.process.stdin),
     )
 
     const diagnostics = new Map<string, Diagnostic[]>()
-
-    // files: path -> { version, refCount }
-    // version: LSP document version, incremented on touchFile (>0 means touched)
-    // refCount: number of openFile calls, decremented on closeFile
-    const files: {
-      [path: string]: { version: number; refCount: number }
-    } = {}
+    const files = new Map<string, File>()
 
     const publishDiagnostics = (filePath: string, diagnosticsInfo: Diagnostic[]) => {
-      // Only collect diagnostics for files that have been touched (version > 0)
-      const state = files[filePath]
+      const state = files.get(filePath)
       if (!state || state.version === 0) return
 
       const exists = diagnostics.has(filePath)
@@ -107,7 +142,7 @@ export namespace LSPClient {
     connection.listen()
 
     // Build initialize params with defaults
-    const initialize: Record<string, any> = {
+    const initialize: Initialize = {
       rootUri: pathToFileURL(input.root).href,
       processId: input.server.process.pid,
       rootPath: input.root,
@@ -118,7 +153,7 @@ export namespace LSPClient {
         },
       ],
       initializationOptions: {
-        ...input.server.initialization,
+        ...(input.server.initialization ?? {}),
       },
       capabilities: {
         window: {
@@ -143,11 +178,7 @@ export namespace LSPClient {
     }
 
     // Call setup hook before initialize - allows customizing connection handlers and capabilities
-    let methods: {
-      diagnostics?: (input: { path: string }) => Promise<Diagnostic[]>
-      documentSymbol?: (input: { path: string; url?: URL }) => Promise<DocumentSymbol[]>
-      ready?: () => Promise<void>
-    } = {}
+    let methods: Methods = {}
     if (input.info.setup) {
       methods = await input.info.setup({ connection, initialize, getClients: input.getClients })
     }
@@ -184,16 +215,11 @@ export namespace LSPClient {
       get connection() {
         return connection
       },
-      // touchFile: open or refresh file for diagnostics, version++
       async touchFile(touchInput: { path: string }) {
-        touchInput.path = path.isAbsolute(touchInput.path)
-          ? touchInput.path
-          : path.resolve(Instance.directory, touchInput.path)
-        const filePath = touchInput.path
+        const filePath = abs(touchInput.path)
 
-        const state = files[filePath]
+        const state = files.get(filePath)
         if (state) {
-          // Already open, send didChange with version++
           const text = await Filesystem.readText(filePath)
 
           l.info("workspace/didChangeWatchedFiles", { path: filePath })
@@ -219,8 +245,7 @@ export namespace LSPClient {
           return
         }
 
-        // First open — set state synchronously to avoid concurrent didOpen
-        files[filePath] = { version: 1, refCount: 0 }
+        files.set(filePath, { version: 1, refs: 0 })
 
         const text = await Filesystem.readText(filePath)
         const extension = path.extname(filePath)
@@ -247,27 +272,21 @@ export namespace LSPClient {
           },
         })
       },
-      // notify.open: backward-compatible alias for touchFile
       notify: {
         async open(openInput: { path: string }) {
           return result.touchFile(openInput)
         },
       },
-      // openFile: explicitly open file, refCount++
       async openFile(openInput: { path: string }) {
-        openInput.path = path.isAbsolute(openInput.path)
-          ? openInput.path
-          : path.resolve(Instance.directory, openInput.path)
-        const filePath = openInput.path
+        const filePath = abs(openInput.path)
 
-        const state = files[filePath]
+        const state = files.get(filePath)
         if (state) {
-          state.refCount++
+          state.refs++
           return
         }
 
-        // Set state synchronously to avoid concurrent didOpen
-        files[filePath] = { version: 0, refCount: 1 }
+        files.set(filePath, { version: 0, refs: 1 })
 
         const text = await Filesystem.readText(filePath)
         const extension = path.extname(filePath)
@@ -283,38 +302,33 @@ export namespace LSPClient {
           },
         })
       },
-      // closeFile: explicitly close file, refCount--
-      // Only sends didClose if refCount<=0 AND version===0 (never touched by touchFile)
       async closeFile(closeInput: { path: string }) {
-        closeInput.path = path.isAbsolute(closeInput.path)
-          ? closeInput.path
-          : path.resolve(Instance.directory, closeInput.path)
-        const filePath = closeInput.path
+        const filePath = abs(closeInput.path)
 
-        const state = files[filePath]
+        const state = files.get(filePath)
         if (!state) return
 
-        state.refCount--
+        state.refs--
 
-        if (state.refCount <= 0 && state.version === 0) {
-          delete files[filePath]
-          await connection.sendNotification("textDocument/didClose", {
-            textDocument: {
-              uri: pathToFileURL(filePath).href,
-            },
-          })
-          diagnostics.delete(filePath)
-        }
+        if (state.refs > 0 || state.version > 0) return
+
+        files.delete(filePath)
+        await connection.sendNotification("textDocument/didClose", {
+          textDocument: {
+            uri: pathToFileURL(filePath).href,
+          },
+        })
+        diagnostics.delete(filePath)
       },
       async documentSymbol(input: { path: string }) {
-        input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
+        const filePath = abs(input.path)
         if (documentSymbolFromLSP) {
-          return documentSymbolFromLSP(input)
+          return documentSymbolFromLSP({ ...input, path: filePath })
         }
         const rootSymbols = await connection
           .sendRequest("textDocument/documentSymbol", {
             textDocument: {
-              uri: pathToFileURL(input.path).href,
+              uri: pathToFileURL(filePath).href,
             },
           })
           .then((r) => (Array.isArray(r) ? r : []) as LSPClient.DocumentSymbol[])
@@ -325,9 +339,7 @@ export namespace LSPClient {
         return diagnostics
       },
       async waitForDiagnostics(waitInput: { path: string; timeout?: number }) {
-        const normalizedPath = Filesystem.normalizePath(
-          path.isAbsolute(waitInput.path) ? waitInput.path : path.resolve(Instance.directory, waitInput.path),
-        )
+        const normalizedPath = abs(waitInput.path)
         l.info("waiting for diagnostics", { path: normalizedPath })
         let unsub: () => void
         let debounceTimer: ReturnType<typeof setTimeout> | undefined

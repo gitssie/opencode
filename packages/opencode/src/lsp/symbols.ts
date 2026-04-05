@@ -1,4 +1,7 @@
 import { pathToFileURL } from "url"
+import { Effect, Layer, ServiceMap } from "effect"
+import { InstanceState } from "@/effect/instance-state"
+import { makeRuntime } from "@/effect/run-service"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
 import { DuckDBIPCClient, type ColumnDef } from "./duckdb-ipc-client"
@@ -15,13 +18,75 @@ import type { LSPServer } from "./server"
 export namespace Index {
   const log = Log.create({ service: "lsp.index" })
 
-  const state = Instance.state(() => ({
-    counter: 1,
-    rebuildInProgress: false,
-    buildingClients: new Map<string, Promise<{ indexed: number; skipped: number; errors: number }>>(),
-    pendingUpdates: new Map<string, Map<string, { event: string }>>(),
-    flushTimers: new Map<string, ReturnType<typeof setTimeout>>(),
-  }))
+  interface State {
+    client: DuckDBIPCClient
+    counter: number
+    rebuildInProgress: boolean
+    buildingClients: Map<string, Promise<{ indexed: number; skipped: number; errors: number }>>
+    pendingUpdates: Map<string, Map<string, { event: string }>>
+    flushTimers: Map<string, ReturnType<typeof setTimeout>>
+  }
+
+  interface Interface {
+    state: () => Effect.Effect<State>
+  }
+
+  class Service extends ServiceMap.Service<Service, Interface>()("@opencode/LSP/Index") {}
+
+  const layer = Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const live = yield* InstanceState.make<State>((ctx) =>
+        Effect.gen(function* () {
+          const client = new DuckDBIPCClient(ctx.directory)
+          yield* Effect.promise(() => client.start())
+
+          const state: State = {
+            client,
+            counter: 1,
+            rebuildInProgress: false,
+            buildingClients: new Map(),
+            pendingUpdates: new Map(),
+            flushTimers: new Map(),
+          }
+
+          yield* Effect.addFinalizer(() =>
+            Effect.promise(async () => {
+              for (const timer of state.flushTimers.values()) {
+                clearTimeout(timer)
+              }
+              await client.shutdown().catch(() => {})
+            }),
+          )
+
+          return state
+        }),
+      )
+
+      return Service.of({
+        state: () => InstanceState.get(live),
+      })
+    }),
+  )
+
+  const { runPromise } = makeRuntime(Service, layer)
+
+  const getState = () => runPromise((svc) => svc.state())
+
+  const clearPending = (s: State, serverID: string) => {
+    const timer = s.flushTimers.get(serverID)
+    if (timer) clearTimeout(timer)
+    s.flushTimers.delete(serverID)
+    s.pendingUpdates.delete(serverID)
+  }
+
+  const clearBuilding = (s: State, serverID: string) => {
+    for (const key of s.buildingClients.keys()) {
+      if (key.startsWith(`${serverID}:`)) {
+        s.buildingClients.delete(key)
+      }
+    }
+  }
 
   export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
@@ -188,21 +253,10 @@ export namespace Index {
     content_hash: string
   }
 
-  // ==================== Shared DuckDB IPC Client (via Instance.state) ====================
-
-  const ipcClientState = Instance.state(
-    async () => {
-      const client = new DuckDBIPCClient(Instance.directory)
-      await client.start()
-      return { client }
-    },
-    async (s) => {
-      await s.client.shutdown()
-    },
-  )
+  type Params = Record<string, unknown>
 
   async function getSharedClient(): Promise<DuckDBIPCClient> {
-    const s = await ipcClientState()
+    const s = await getState()
     return s.client
   }
 
@@ -245,7 +299,7 @@ export namespace Index {
       await client.exec(sql)
     }
 
-    private async run(sql: string, params?: Record<string, any>): Promise<void> {
+    private async run(sql: string, params?: Params): Promise<void> {
       const client = await this.ensureInit()
       if (params) {
         await client.delete(sql, params)
@@ -254,7 +308,7 @@ export namespace Index {
       }
     }
 
-    private async all<T>(sql: string, params?: Record<string, any>): Promise<T[]> {
+    private async all<T>(sql: string, params?: Params): Promise<T[]> {
       const client = await this.ensureInit()
       return client.query<T>(sql, params)
     }
@@ -410,7 +464,7 @@ export namespace Index {
       // 删除旧数据
       if (docIdsToDelete.length > 0) {
         const placeholders = docIdsToDelete.map((_, i) => `$${i + 1}`).join(",")
-        const params: Record<string, any> = {}
+        const params: Params = {}
         docIdsToDelete.forEach((id, i) => {
           params[i + 1] = id
         })
@@ -581,7 +635,7 @@ export namespace Index {
 
       const schema = this.schemaName
       let sql = `SELECT s.id, s.doc_id, s.parent_id, s.parent_ids, s.name, s.name_path, s.kind, s.start_line, s.start_char, s.end_line, s.end_char, s.body, s.detail, s.overload_idx, d.relative_path, d.content_hash FROM ${schema}.symbols s JOIN ${schema}.docs d ON s.doc_id = d.id WHERE 1=1`
-      const params: Record<string, any> = {}
+      const params: Params = {}
       let paramIndex = 1
 
       if (opts.namePathRegex) {
@@ -680,7 +734,7 @@ export namespace Index {
       await this.ensureInit()
       const schema = this.schemaName
       const placeholders = docIds.map((_, i) => `$${i + 1}`).join(",")
-      const params: Record<string, any> = {}
+      const params: Params = {}
       docIds.forEach((id, i) => {
         params[i + 1] = id
       })
@@ -872,7 +926,20 @@ export namespace Index {
   }) {
     const serverID = input.server.id
     const index = new DuckDBIndex(serverID)
-    const s = state()
+    const s = await getState()
+    const off: Array<() => void> = []
+    let dead = false
+
+    index.start()
+
+    const cleanup = () => {
+      if (dead) return
+      dead = true
+      off.forEach((item) => item())
+      clearPending(s, serverID)
+      clearBuilding(s, serverID)
+      index.stop()
+    }
 
     const getClients = async (file: string) => {
       if (!(await input.hasClients(file))) {
@@ -888,6 +955,7 @@ export namespace Index {
     }
 
     const buildIndexIncremental = async (client: LSPClient.Info) => {
+      if (dead) return
       const extensions = input.server.extensions
       s.rebuildInProgress = true
       try {
@@ -898,6 +966,9 @@ export namespace Index {
     }
 
     const initializeIndex = async () => {
+      if (dead) {
+        return
+      }
       if (s.rebuildInProgress) {
         return
       }
@@ -913,53 +984,66 @@ export namespace Index {
     }
 
     // 订阅文件变更事件
-    Bus.subscribe(FileWatcher.Event.Updated, async (evt) => {
-      if ((await hasClients(serverID)) == false) {
-        return
-      }
-      const absolutePath = evt.properties.file
-      const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
+    off.push(
+      Bus.subscribe(FileWatcher.Event.Updated, async (evt) => {
+        if (dead) {
+          return
+        }
+        if ((await hasClients(serverID)) == false) {
+          return
+        }
+        const absolutePath = evt.properties.file
+        const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
 
-      // 确保当前 serverID 的 pendingUpdates 存在
-      if (!s.pendingUpdates.has(serverID)) {
-        s.pendingUpdates.set(serverID, new Map())
-      }
+        // 确保当前 serverID 的 pendingUpdates 存在
+        if (!s.pendingUpdates.has(serverID)) {
+          s.pendingUpdates.set(serverID, new Map())
+        }
 
-      // 收集到 pending，使用 relativePath 作为 key
-      const pending = s.pendingUpdates.get(serverID)!
-      pending.set(relativePath, { event: evt.properties.event })
+        // 收集到 pending，使用 relativePath 作为 key
+        const pending = s.pendingUpdates.get(serverID)!
+        pending.set(relativePath, { event: evt.properties.event })
 
-      // 只在没有 timer 时创建
-      if (!s.flushTimers.has(serverID)) {
-        s.flushTimers.set(
-          serverID,
-          setTimeout(async () => {
-            s.flushTimers.delete(serverID)
-            const pending = s.pendingUpdates.get(serverID)
-            if (!pending || pending.size === 0) return
+        // 只在没有 timer 时创建
+        if (!s.flushTimers.has(serverID)) {
+          s.flushTimers.set(
+            serverID,
+            setTimeout(async () => {
+              if (dead) return
+              s.flushTimers.delete(serverID)
+              const pending = s.pendingUpdates.get(serverID)
+              if (!pending || pending.size === 0) return
 
-            const updates = new Map(pending)
-            pending.clear()
+              const updates = new Map(pending)
+              pending.clear()
 
-            await flushPendingUpdates({
-              index,
-              updates,
-              getClients,
-              serverID,
-            })
-          }, 2000),
-        )
-      }
-    })
+              await flushPendingUpdates({
+                index,
+                updates,
+                getClients,
+                serverID,
+              })
+            }, 2000),
+          )
+        }
+      }),
+    )
 
-    Bus.subscribe(LSP.Event.Updated, async (evt) => {
-      if (s.rebuildInProgress) {
-        return
-      }
-      const client = evt.properties.client as LSPClient.Info
-      if (client.serverID !== serverID) return
-      buildIndexIncremental(client)
-    })
+    off.push(
+      Bus.subscribe(LSP.Event.Updated, async (evt) => {
+        if (dead) {
+          return
+        }
+        if (s.rebuildInProgress) {
+          return
+        }
+        const client = evt.properties.client as LSPClient.Info
+        if (client.serverID !== serverID) return
+        buildIndexIncremental(client).catch((error) => {
+          log.error("buildIndexIncremental: failed", { serverID, error })
+        })
+      }),
+    )
 
     async function buildIndex(buffer: FileBuffer): Promise<DocumentSymbol[]> {
       const relativePath = buffer.relativePath
@@ -981,7 +1065,13 @@ export namespace Index {
     }
 
     // 启动时初始化索引
-    await initializeIndex()
+    try {
+      await initializeIndex()
+    } catch (error) {
+      cleanup()
+      throw error
+    }
+
     return {
       serverID,
       appender: index.createAppender(true),
@@ -1097,7 +1187,7 @@ export namespace Index {
         return await index.invalidateDoc(relativePath)
       },
       async shutdown() {
-        index.stop()
+        cleanup()
       },
     }
   }
@@ -1109,7 +1199,7 @@ export namespace Index {
     rebuild?: boolean
   }): Promise<{ indexed: number; skipped: number; errors: number }> {
     const { indexes, extensions, getSymbols, rebuild } = options
-    const s = state()
+    const s = await getState()
     if (extensions.size === 0) {
       return { indexed: 0, skipped: 0, errors: 0 }
     }
@@ -1154,7 +1244,7 @@ export namespace Index {
               skipped++
               continue
             }
-            if(symbols?.length > 0){
+            if (symbols?.length > 0) {
               await index.appender.append(relativePath, hash, symbols)
             }
           }
@@ -1184,7 +1274,7 @@ export namespace Index {
   }): Promise<{ indexed: number; skipped: number; errors: number }> {
     const { index, client, extensions } = options
     const key = `${client.serverID}:${client.root}`
-    const s = state()
+    const s = await getState()
 
     // 检查是否已经在构建中
     const existing = s.buildingClients.get(key)
@@ -1414,7 +1504,7 @@ export namespace Index {
     if (symbolDicts.length === 0) return []
 
     const pathToKey = new Map<string, string>()
-    const s = await state()
+    const s = await getState()
 
     for (const symbol of symbolDicts) {
       const relativePath = symbol.relative_path

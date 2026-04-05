@@ -154,8 +154,11 @@ export namespace LSP {
     command: string[]
     extensions?: string[]
     env?: Record<string, string>
-    initialization?: Record<string, any>
+    initialization?: Record<string, unknown>
   }
+
+  type Response = unknown
+  type ResponseList = Response[]
 
   interface State {
     clients: LSPClient.Info[]
@@ -176,15 +179,15 @@ export namespace LSP {
     readonly closeFile: (input: { path: string }) => Effect.Effect<void>
     readonly touchFile: (input: string, waitForDiagnostics?: boolean, timeout?: number) => Effect.Effect<void>
     readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
-    readonly hover: (input: LocInput) => Effect.Effect<any>
-    readonly definition: (input: LocInput) => Effect.Effect<any[]>
-    readonly references: (input: LocInput) => Effect.Effect<any[]>
-    readonly implementation: (input: LocInput) => Effect.Effect<any[]>
+    readonly hover: (input: LocInput) => Effect.Effect<Response>
+    readonly definition: (input: LocInput) => Effect.Effect<ResponseList>
+    readonly references: (input: LocInput) => Effect.Effect<ResponseList>
+    readonly implementation: (input: LocInput) => Effect.Effect<ResponseList>
     readonly documentSymbol: (uri: string) => Effect.Effect<(LSP.DocumentSymbol | LSP.Symbol)[]>
     readonly workspaceSymbol: (query: string) => Effect.Effect<LSP.Symbol[]>
-    readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<any[]>
-    readonly incomingCalls: (input: LocInput) => Effect.Effect<any[]>
-    readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
+    readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<ResponseList>
+    readonly incomingCalls: (input: LocInput) => Effect.Effect<ResponseList>
+    readonly outgoingCalls: (input: LocInput) => Effect.Effect<ResponseList>
     readonly rebuildIndex: (rebuild?: boolean) => Effect.Effect<{ indexed: number; skipped: number; errors: number }>
     readonly searchSymbols: (opts: SearchInput) => Effect.Effect<LSPClient.DocumentSymbol[]>
     readonly getSymbols: (file: string) => Effect.Effect<Map<string, LSPClient.DocumentSymbol[]>>
@@ -581,8 +584,9 @@ export namespace LSP {
           runAll(s, (client) =>
             client.connection
               .sendRequest("workspace/symbol", { query })
-              .then((result: any) => result.filter((x: LSP.Symbol) => kinds.includes(x.kind)))
-              .then((result: any) => result.slice(0, 10))
+              .then((result) => (Array.isArray(result) ? result : []))
+              .then((result) => result.filter((x): x is LSP.Symbol => !!x && kinds.includes((x as LSP.Symbol).kind)))
+              .then((result) => result.slice(0, 10))
               .catch(() => []),
           ),
         )
@@ -608,12 +612,13 @@ export namespace LSP {
         const s = yield* InstanceState.get(state)
         const results = yield* Effect.promise(() =>
           run(s, input.file, async (client) => {
-            const items = (await client.connection
+            const items = await client.connection
               .sendRequest("textDocument/prepareCallHierarchy", {
                 textDocument: { uri: pathToFileURL(input.file).href },
                 position: { line: input.line, character: input.character },
               })
-              .catch(() => [])) as any[]
+              .then((result) => (Array.isArray(result) ? result : []))
+              .catch(() => [])
             if (!items?.length) return []
             return client.connection.sendRequest("callHierarchy/incomingCalls", { item: items[0] }).catch(() => [])
           }),
@@ -625,12 +630,13 @@ export namespace LSP {
         const s = yield* InstanceState.get(state)
         const results = yield* Effect.promise(() =>
           run(s, input.file, async (client) => {
-            const items = (await client.connection
+            const items = await client.connection
               .sendRequest("textDocument/prepareCallHierarchy", {
                 textDocument: { uri: pathToFileURL(input.file).href },
                 position: { line: input.line, character: input.character },
               })
-              .catch(() => [])) as any[]
+              .then((result) => (Array.isArray(result) ? result : []))
+              .catch(() => [])
             if (!items?.length) return []
             return client.connection.sendRequest("callHierarchy/outgoingCalls", { item: items[0] }).catch(() => [])
           }),
