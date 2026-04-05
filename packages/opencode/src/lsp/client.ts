@@ -124,7 +124,7 @@ export namespace LSPClient {
       publishDiagnostics(filePath, params.diagnostics)
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {
-      l.info("window/workDoneProgress/create", params)
+      l.debug("window/workDoneProgress/create", params)
       return null
     })
     connection.onRequest("workspace/configuration", async () => {
