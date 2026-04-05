@@ -63,7 +63,7 @@ export namespace LoopExit {
   export const shouldExit = Effect.fn("LoopExit.shouldExit")(function* (input: RunInput) {
     if (input.session.parentID) return true
     if (!input.lastAssistant) return true
-    if (input.lastUser.tools?.question === false) return true
+    if (input.lastUser.tools && input.lastUser.tools.question !== true) return true
     const lastAssistant = input.lastAssistant
 
     const sync = (part: MessageV2.ToolPart) => {
