@@ -57,13 +57,13 @@ export namespace LoopExit {
     sessions: Session.Interface
     question: Question.Interface
     lastAssistant?: MessageV2.WithParts
-    lastUser: MessageV2.User
+    lastUser: MessageV2.WithParts
   }
 
   export const shouldExit = Effect.fn("LoopExit.shouldExit")(function* (input: RunInput) {
     if (input.session.parentID) return true
     if (!input.lastAssistant) return true
-    if (input.lastUser.tools && input.lastUser.tools.question !== true) return true
+    if (input.lastUser.parts.some((part) => part.type === "compaction" || part.type === "subtask")) return true
     const lastAssistant = input.lastAssistant
 
     const sync = (part: MessageV2.ToolPart) => {

@@ -1351,12 +1351,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
             let lastUser: MessageV2.User | undefined
+            let lastUserMsg: MessageV2.WithParts | undefined
             let lastAssistant: MessageV2.Assistant | undefined
             let lastFinished: MessageV2.Assistant | undefined
             let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
             for (let i = msgs.length - 1; i >= 0; i--) {
               const msg = msgs[i]
               if (!lastUser && msg.info.role === "user") lastUser = msg.info
+              if (!lastUserMsg && msg.info.role === "user") lastUserMsg = msg
               if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
               if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
               if (lastUser && lastFinished) break
@@ -1365,6 +1367,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             }
 
             if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+            if (!lastUserMsg) throw new Error("No user message found in stream. This should never happen.")
 
             const lastAssistantMsg = msgs.findLast(
               (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1385,7 +1388,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 sessions,
                 question,
                 lastAssistant: lastAssistantMsg,
-                lastUser,
+                lastUser: lastUserMsg,
               })
               if (exit) {
                 log.info("exiting loop", { sessionID })
