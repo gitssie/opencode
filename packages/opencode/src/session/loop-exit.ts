@@ -53,6 +53,7 @@ export namespace LoopExit {
 
   interface RunInput {
     plugin: Plugin.Interface
+    session: Session.Info
     sessions: Session.Interface
     question: Question.Interface
     lastAssistant?: MessageV2.WithParts
@@ -60,6 +61,7 @@ export namespace LoopExit {
   }
 
   export const shouldExit = Effect.fn("LoopExit.shouldExit")(function* (input: RunInput) {
+    if (input.session.parentID) return true
     if (!input.lastAssistant) return true
     if (input.lastUser.tools?.question === false) return true
     const lastAssistant = input.lastAssistant
