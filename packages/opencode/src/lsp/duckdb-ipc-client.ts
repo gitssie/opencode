@@ -177,6 +177,9 @@ export class DuckDBIPCClient {
         ...process.env,
         BUN_BE_BUN: "1",
       },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "pipe",
     }).exited
   }
 

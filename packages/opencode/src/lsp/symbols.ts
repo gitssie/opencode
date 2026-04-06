@@ -20,6 +20,7 @@ export namespace Index {
 
   interface State {
     getClient: Effect.Effect<DuckDBIPCClient>
+    client?: DuckDBIPCClient
     counter: number
     rebuildInProgress: boolean
     buildingClients: Map<string, Promise<{ indexed: number; skipped: number; errors: number }>>
@@ -39,13 +40,8 @@ export namespace Index {
       const live = yield* InstanceState.make<State>((ctx) =>
         Effect.gen(function* () {
           const state: State = {
-            getClient: yield* Effect.cached(
-              Effect.promise(async () => {
-                const client = new DuckDBIPCClient(ctx.directory)
-                await client.start()
-                return client
-              }),
-            ),
+            getClient: undefined as never,
+            client: undefined,
             counter: 1,
             rebuildInProgress: false,
             buildingClients: new Map(),
@@ -53,14 +49,21 @@ export namespace Index {
             flushTimers: new Map(),
           }
 
+          state.getClient = yield* Effect.cached(
+            Effect.promise(async () => {
+              const client = new DuckDBIPCClient(ctx.directory)
+              state.client = client
+              await client.start()
+              return client
+            }),
+          )
+
           yield* Effect.addFinalizer(() =>
             Effect.promise(async () => {
               for (const timer of state.flushTimers.values()) {
                 clearTimeout(timer)
               }
-              await Effect.runPromise(state.getClient)
-                .then((x) => x.shutdown())
-                .catch(() => {})
+              await state.client?.shutdown().catch(() => {})
             }),
           )
 
