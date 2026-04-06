@@ -16,6 +16,7 @@ import { NamedError } from "@opencode-ai/util/error"
 import { withTimeout } from "../util/timeout"
 import { Instance } from "../project/instance"
 import { Filesystem } from "../util/filesystem"
+import { Effect, Semaphore } from "effect"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
 
@@ -29,8 +30,11 @@ export namespace LSPClient {
   export type DocumentSymbol = VSCodeDocumentSymbol & { overloadIdx?: number }
 
   interface File {
+    lock: Semaphore.Semaphore
+    open: boolean
     version: number
     refs: number
+    touched: boolean
   }
 
   interface Methods {
@@ -105,9 +109,29 @@ export namespace LSPClient {
     const diagnostics = new Map<string, Diagnostic[]>()
     const files = new Map<string, File>()
 
+    const file = (path: string) => {
+      const hit = files.get(path)
+      if (hit) return hit
+
+      const next = {
+        lock: Semaphore.makeUnsafe(1),
+        open: false,
+        version: 0,
+        refs: 0,
+        touched: false,
+      } satisfies File
+      files.set(path, next)
+      return next
+    }
+
+    const locked = <T>(path: string, fn: (state: File) => Promise<T>) => {
+      const state = file(path)
+      return Effect.runPromise(Effect.promise(() => fn(state)).pipe(state.lock.withPermits(1)))
+    }
+
     const publishDiagnostics = (filePath: string, diagnosticsInfo: Diagnostic[]) => {
       const state = files.get(filePath)
-      if (!state || state.version === 0) return
+      if (!state?.open || (!state.touched && state.version === 0)) return
 
       const exists = diagnostics.has(filePath)
       diagnostics.set(filePath, diagnosticsInfo)
@@ -217,59 +241,62 @@ export namespace LSPClient {
       },
       async touchFile(touchInput: { path: string }) {
         const filePath = abs(touchInput.path)
+        await locked(filePath, async (state) => {
+          if (state.open) {
+            const text = await Filesystem.readText(filePath)
 
-        const state = files.get(filePath)
-        if (state) {
+            l.info("workspace/didChangeWatchedFiles", { path: filePath })
+            await connection.sendNotification("workspace/didChangeWatchedFiles", {
+              changes: [
+                {
+                  uri: pathToFileURL(filePath).href,
+                  type: 2, // Changed
+                },
+              ],
+            })
+
+            const version = state.version + 1
+            l.info("textDocument/didChange", { path: filePath, version })
+            await connection.sendNotification("textDocument/didChange", {
+              textDocument: {
+                uri: pathToFileURL(filePath).href,
+                version,
+              },
+              contentChanges: [{ text }],
+            })
+            state.version = version
+            state.touched = true
+            return
+          }
+
           const text = await Filesystem.readText(filePath)
+          const extension = path.extname(filePath)
+          const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
           l.info("workspace/didChangeWatchedFiles", { path: filePath })
           await connection.sendNotification("workspace/didChangeWatchedFiles", {
             changes: [
               {
                 uri: pathToFileURL(filePath).href,
-                type: 2, // Changed
+                type: 1, // Created
               },
             ],
           })
 
-          const version = state.version
-          state.version++
-          l.info("textDocument/didChange", { path: filePath, version })
-          await connection.sendNotification("textDocument/didChange", {
+          l.info("textDocument/didOpen", { path: filePath })
+          diagnostics.delete(filePath)
+          await connection.sendNotification("textDocument/didOpen", {
             textDocument: {
               uri: pathToFileURL(filePath).href,
-              version,
+              languageId,
+              version: 0,
+              text,
             },
-            contentChanges: [{ text }],
           })
-          return
-        }
-
-        files.set(filePath, { version: 1, refs: 0 })
-
-        const text = await Filesystem.readText(filePath)
-        const extension = path.extname(filePath)
-        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
-
-        l.info("workspace/didChangeWatchedFiles", { path: filePath })
-        await connection.sendNotification("workspace/didChangeWatchedFiles", {
-          changes: [
-            {
-              uri: pathToFileURL(filePath).href,
-              type: 1, // Created
-            },
-          ],
-        })
-
-        l.info("textDocument/didOpen", { path: filePath })
-        diagnostics.delete(filePath)
-        await connection.sendNotification("textDocument/didOpen", {
-          textDocument: {
-            uri: pathToFileURL(filePath).href,
-            languageId,
-            version: 0,
-            text,
-          },
+          state.open = true
+          state.version = 0
+          state.refs = 0
+          state.touched = true
         })
       },
       notify: {
@@ -279,46 +306,48 @@ export namespace LSPClient {
       },
       async openFile(openInput: { path: string }) {
         const filePath = abs(openInput.path)
+        await locked(filePath, async (state) => {
+          if (state.open) {
+            state.refs++
+            return
+          }
 
-        const state = files.get(filePath)
-        if (state) {
-          state.refs++
-          return
-        }
+          const text = await Filesystem.readText(filePath)
+          const extension = path.extname(filePath)
+          const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
 
-        files.set(filePath, { version: 0, refs: 1 })
-
-        const text = await Filesystem.readText(filePath)
-        const extension = path.extname(filePath)
-        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
-
-        diagnostics.delete(filePath)
-        await connection.sendNotification("textDocument/didOpen", {
-          textDocument: {
-            uri: pathToFileURL(filePath).href,
-            languageId,
-            version: 0,
-            text,
-          },
+          diagnostics.delete(filePath)
+          await connection.sendNotification("textDocument/didOpen", {
+            textDocument: {
+              uri: pathToFileURL(filePath).href,
+              languageId,
+              version: 0,
+              text,
+            },
+          })
+          state.open = true
+          state.version = 0
+          state.refs = 1
+          state.touched = false
         })
       },
       async closeFile(closeInput: { path: string }) {
         const filePath = abs(closeInput.path)
+        await locked(filePath, async (state) => {
+          if (!state.open) return
 
-        const state = files.get(filePath)
-        if (!state) return
+          state.refs--
 
-        state.refs--
+          if (state.refs > 0 || state.touched) return
 
-        if (state.refs > 0 || state.version > 0) return
-
-        files.delete(filePath)
-        await connection.sendNotification("textDocument/didClose", {
-          textDocument: {
-            uri: pathToFileURL(filePath).href,
-          },
+          files.delete(filePath)
+          await connection.sendNotification("textDocument/didClose", {
+            textDocument: {
+              uri: pathToFileURL(filePath).href,
+            },
+          })
+          diagnostics.delete(filePath)
         })
-        diagnostics.delete(filePath)
       },
       async documentSymbol(input: { path: string }) {
         const filePath = abs(input.path)

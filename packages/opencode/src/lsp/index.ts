@@ -159,6 +159,12 @@ export namespace LSP {
 
   type Response = unknown
   type ResponseList = Response[]
+  const ROOT_TTL = 10_000
+
+  interface RootCache {
+    value: Promise<string | undefined>
+    time: number
+  }
 
   interface State {
     clients: LSPClient.Info[]
@@ -166,6 +172,7 @@ export namespace LSP {
     broken: Set<string>
     spawning: Map<string, Promise<LSPClient.Info | undefined>>
     indexes: Map<string, Index.Info>
+    roots: Map<string, RootCache>
     getClients: (file: string) => Promise<LSPClient.Info[]>
     hasClients: (file: string) => Promise<boolean>
     getClientsByServerId: (serverID: string) => Promise<LSPClient.Info[]>
@@ -207,6 +214,20 @@ export namespace LSP {
     if (!root) return undefined
     const dir = path.isAbsolute(root) ? root : path.join(Instance.directory, root)
     return Filesystem.normalizePath(dir)
+  }
+
+  const key = (serverID: string, file: string) => `${serverID}:${Filesystem.normalizePath(path.dirname(file))}`
+
+  const pair = (serverID: string, root: string) => `${serverID}:${root}`
+
+  const getRootCached = (s: State, server: LSPServer.Info, file: string) => {
+    const id = key(server.id, file)
+    const hit = s.roots.get(id)
+    if (hit && Date.now() - hit.time < ROOT_TTL) return hit.value
+
+    const next = getRoot(server, file)
+    s.roots.set(id, { value: next, time: Date.now() })
+    return next
   }
 
   const run = async <T>(s: State, file: string, fn: (client: LSPClient.Info) => Promise<T>) => {
@@ -297,6 +318,7 @@ export namespace LSP {
             broken: new Set(),
             spawning: new Map(),
             indexes: new Map(),
+            roots: new Map(),
             getClients: async () => [],
             hasClients: async () => false,
             getClientsByServerId: async () => [],
@@ -309,9 +331,9 @@ export namespace LSP {
             const extension = path.parse(target).ext || target
             for (const server of Object.values(s.servers)) {
               if (server.extensions.length && !server.extensions.includes(extension)) continue
-              const root = await getRoot(server, target)
+              const root = await getRootCached(s, server, target)
               if (!root) continue
-              if (s.broken.has(root + server.id)) continue
+              if (s.broken.has(pair(server.id, root))) continue
               return true
             }
             return false
@@ -367,9 +389,9 @@ export namespace LSP {
             for (const server of Object.values(s.servers)) {
               if (server.extensions.length && !server.extensions.includes(extension)) continue
 
-              const root = await getRoot(server, target)
+              const root = await getRootCached(s, server, target)
               if (!root) continue
-              if (s.broken.has(root + server.id)) continue
+              if (s.broken.has(pair(server.id, root))) continue
 
               const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
               if (match) {
@@ -377,8 +399,8 @@ export namespace LSP {
                 continue
               }
 
-              const key = root + server.id
-              const inflight = s.spawning.get(key)
+              const id = pair(server.id, root)
+              const inflight = s.spawning.get(id)
               if (inflight) {
                 const client = await inflight
                 if (!client) continue
@@ -386,12 +408,12 @@ export namespace LSP {
                 continue
               }
 
-              const task = schedule(server, root, key)
-              s.spawning.set(key, task)
+              const task = schedule(server, root, id)
+              s.spawning.set(id, task)
 
               task.finally(() => {
-                if (s.spawning.get(key) === task) {
-                  s.spawning.delete(key)
+                if (s.spawning.get(id) === task) {
+                  s.spawning.delete(id)
                 }
               })
 
