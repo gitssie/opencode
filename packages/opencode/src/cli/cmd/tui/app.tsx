@@ -125,14 +125,17 @@ import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
 
 function rendererConfig(_config: TuiConfig.Info): CliRendererConfig {
+  const mouseEnabled = !Flag.OPENCODE_DISABLE_MOUSE && (_config.mouse ?? true)
+
   return {
     externalOutputMode: "passthrough",
     targetFps: 60,
     gatherStats: false,
     exitOnCtrlC: false,
-    useKittyKeyboard: { events: process.platform === "win32" },
+    useKittyKeyboard: {},
     autoFocus: false,
     openConsoleOnError: false,
+    useMouse: mouseEnabled,
     consoleOptions: {
       keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
       onCopySelection: (text) => {
@@ -285,9 +288,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     theme: themeState,
     toast,
     renderer,
-  })
-  onCleanup(() => {
-    api.dispose()
   })
   const [ready, setReady] = createSignal(false)
   TuiPluginRuntime.init(api)
@@ -599,6 +599,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     {
       title: "Switch model variant",
       value: "variant.list",
+      keybind: "variant_list",
       category: "Agent",
       hidden: local.model.variant.list().length === 0,
       slash: {
@@ -672,7 +673,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
-      title: "Toggle Theme Mode",
+      title: "Toggle theme mode",
       value: "theme.switch_mode",
       onSelect: (dialog) => {
         setMode(mode() === "dark" ? "light" : "dark")
@@ -681,7 +682,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
-      title: locked() ? "Unlock Theme Mode" : "Lock Theme Mode",
+      title: locked() ? "Unlock theme mode" : "Lock theme mode",
       value: "theme.mode.lock",
       onSelect: (dialog) => {
         if (locked()) unlock()
@@ -758,6 +759,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       keybind: "terminal_suspend",
       category: "System",
       hidden: true,
+      enabled: tuiConfig.keybinds?.terminal_suspend !== "none",
       onSelect: () => {
         process.once("SIGCONT", () => {
           renderer.resume()
