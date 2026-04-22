@@ -2,11 +2,11 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import crypto from "crypto"
 import path from "path"
 import { lstat, mkdir, readlink, rm, symlink, writeFile } from "fs/promises"
-import { Log } from "../util/log"
+import { Log } from "../util"
 import { Global } from "../global"
+import { Npm } from "../npm"
 
 const log = Log.create({ service: "lsp.duckdb-ipc" })
-const bun = process.execPath
 
 export interface ColumnDef {
   name: string
@@ -141,7 +141,7 @@ export class DuckDBIPCClient {
   }
 
   private get serverScriptPath() {
-    return path.join(this.serverDir, "server.js")
+    return path.join(this.serverDir, "server.mjs")
   }
 
   private get nodeModulesLink() {
@@ -169,18 +169,8 @@ export class DuckDBIPCClient {
 
   private async install(): Promise<void> {
     const mod = path.join(Global.Path.bin, "node_modules", "@duckdb", "node-api", "package.json")
-    if (await Bun.file(mod).exists()) return
-
-    await Bun.spawn([bun, "install", "@duckdb/node-api"], {
-      cwd: Global.Path.bin,
-      env: {
-        ...process.env,
-        BUN_BE_BUN: "1",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "pipe",
-    }).exited
+    if (await lstat(mod).catch(() => undefined)) return
+    await Npm.install(Global.Path.bin, { add: [{ name: "@duckdb/node-api" }] })
   }
 
   private async prepare(): Promise<void> {
@@ -202,11 +192,10 @@ export class DuckDBIPCClient {
   }
 
   private launch(): ChildProcessWithoutNullStreams {
-    const proc = spawn(bun, ["run", this.serverScriptPath], {
+    const proc = spawn("node", [this.serverScriptPath], {
       cwd: this.serverDir,
       env: {
         ...process.env,
-        BUN_BE_BUN: "1",
       },
     })
 
@@ -221,7 +210,6 @@ export class DuckDBIPCClient {
     await this.prepare()
 
     log.info("spawning duckdb server", {
-      bunPath: bun,
       serverScript: this.serverScriptPath,
       cwd: this.serverDir,
     })

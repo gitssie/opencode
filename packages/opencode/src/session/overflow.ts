@@ -13,7 +13,7 @@ export function usable(input: { cfg: Config.Info; model: Provider.Model }) {
     input.cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(input.model))
   return input.model.limit.input
     ? Math.max(0, input.model.limit.input - reserved)
-    : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model))
+    : Math.max(0, context - reserved /*ProviderTransform.maxOutputTokens(input.model)*/)
 }
 
 export function isOverflow(input: { cfg: Config.Info; tokens: MessageV2.Assistant["tokens"]; model: Provider.Model }) {

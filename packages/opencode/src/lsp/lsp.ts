@@ -1,10 +1,10 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Log } from "../util"
-import * as LSPClient from "./client"
+import { LSPClient } from "./client"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
-import * as LSPServer from "./server"
+import { LSPServer } from "./server"
 import z from "zod"
 import { Config } from "../config"
 import { Flag } from "@/flag/flag"
@@ -13,11 +13,20 @@ import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context } from "effect"
 import { InstanceState } from "@/effect"
 import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+import * as Index from "./symbols"
 
 const log = Log.create({ service: "lsp" })
 
 export const Event = {
-  Updated: BusEvent.define("lsp.updated", z.object({})),
+  Updated: BusEvent.define(
+    "lsp.updated",
+    z.object({
+      serverID: z.string(),
+      root: z.string(),
+      client: z.unknown(),
+      extensions: z.array(z.string()),
+    }),
+  ),
 }
 
 export const Range = z
@@ -129,18 +138,29 @@ const filterExperimentalServers = (servers: Record<string, LSPServer.Info>) => {
 }
 
 type LocInput = { file: string; line: number; character: number }
+type SearchInput = {
+  namePathRegex: string
+  includeKinds?: number[]
+  excludeKinds?: number[]
+  relativePathRegex?: string
+  includeBody?: boolean
+}
 
 interface State {
   clients: LSPClient.Info[]
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  indexes: Map<string, Index.Index.Info>
+  getClientsByServerId: (serverID: string) => Promise<LSPClient.Info[]>
 }
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
+  readonly openFile: (input: { path: string }) => Effect.Effect<void>
+  readonly closeFile: (input: { path: string }) => Effect.Effect<void>
   readonly touchFile: (input: string, waitForDiagnostics?: boolean) => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
@@ -152,6 +172,9 @@ export interface Interface {
   readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<any[]>
   readonly incomingCalls: (input: LocInput) => Effect.Effect<any[]>
   readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
+  readonly rebuildIndex: (rebuild?: boolean) => Effect.Effect<{ indexed: number; skipped: number; errors: number }>
+  readonly searchSymbols: (opts: SearchInput) => Effect.Effect<LSPClient.DocumentSymbol[]>
+  readonly getSymbols: (file: string) => Effect.Effect<Map<string, LSPClient.DocumentSymbol[]>>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
@@ -187,7 +210,7 @@ export const layer = Layer.effect(
               servers[name] = {
                 ...existing,
                 id: name,
-                root: existing?.root ?? (async (_file, ctx) => ctx.directory),
+                root: existing?.root ?? (async (_file, ctx) => ctx!.directory),
                 extensions: item.extensions ?? existing?.extensions ?? [],
                 spawn: async (root) => ({
                   process: lspspawn(item.command[0], item.command.slice(1), {
@@ -212,11 +235,16 @@ export const layer = Layer.effect(
           servers,
           broken: new Set(),
           spawning: new Map(),
+          indexes: new Map(),
+          getClientsByServerId: async () => [],
         }
+
+        s.getClientsByServerId = async (serverID) => s.clients.filter((x) => x.serverID === serverID)
 
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
             await Promise.all(s.clients.map((client) => client.shutdown()))
+            await Promise.all([...s.indexes.values()].map((index) => index.shutdown()))
           }),
         )
 
@@ -226,15 +254,18 @@ export const layer = Layer.effect(
 
     const getClients = Effect.fnUntraced(function* (file: string) {
       const ctx = yield* InstanceState.context
+      const normalizedFile = AppFileSystem.normalizePath(
+        path.isAbsolute(file) ? file : path.resolve(ctx.directory, file),
+      )
       if (
-        !AppFileSystem.contains(ctx.directory, file) &&
-        (ctx.worktree === "/" || !AppFileSystem.contains(ctx.worktree, file))
+        !AppFileSystem.contains(ctx.directory, normalizedFile) &&
+        (ctx.worktree === "/" || !AppFileSystem.contains(ctx.worktree, normalizedFile))
       ) {
         return [] as LSPClient.Info[]
       }
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
-        const extension = path.parse(file).ext || file
+        const extension = path.parse(normalizedFile).ext || normalizedFile
         const result: LSPClient.Info[] = []
 
         async function schedule(server: LSPServer.Info, root: string, key: string) {
@@ -256,8 +287,9 @@ export const layer = Layer.effect(
           const client = await LSPClient.create({
             serverID: server.id,
             server: handle,
+            info: server,
             root,
-            directory: ctx.directory,
+            getClients: (file: string) => Effect.runPromise(getClients(file)),
           }).catch(async (err) => {
             s.broken.add(key)
             await Process.stop(handle.process)
@@ -280,7 +312,7 @@ export const layer = Layer.effect(
         for (const server of Object.values(s.servers)) {
           if (server.extensions.length && !server.extensions.includes(extension)) continue
 
-          const root = await server.root(file, ctx)
+          const root = await server.root(normalizedFile, ctx)
           if (!root) continue
           if (s.broken.has(root + server.id)) continue
 
@@ -311,16 +343,30 @@ export const layer = Layer.effect(
           if (!client) continue
 
           result.push(client)
-          Bus.publish(Event.Updated, {})
+          Bus.publish(Event.Updated, {
+            serverID: server.id,
+            root,
+            client,
+            extensions: server.extensions,
+          })
         }
 
         return result
       })
     })
 
-    const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
-      const clients = yield* getClients(file)
-      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
+    const resolveFile = Effect.fnUntraced(function* (file: string) {
+      const ctx = yield* InstanceState.context
+      return AppFileSystem.normalizePath(path.isAbsolute(file) ? file : path.resolve(ctx.directory, file))
+    })
+
+    const run = Effect.fnUntraced(function* <T>(
+      file: string,
+      fn: (client: LSPClient.Info, file: string) => Promise<T>,
+    ) {
+      const normalizedFile = yield* resolveFile(file)
+      const clients = yield* getClients(normalizedFile)
+      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x, normalizedFile))))
     })
 
     const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
@@ -349,18 +395,37 @@ export const layer = Layer.effect(
 
     const hasClients = Effect.fn("LSP.hasClients")(function* (file: string) {
       const ctx = yield* InstanceState.context
+      const normalizedFile = AppFileSystem.normalizePath(
+        path.isAbsolute(file) ? file : path.resolve(ctx.directory, file),
+      )
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
-        const extension = path.parse(file).ext || file
+        const extension = path.parse(normalizedFile).ext || normalizedFile
         for (const server of Object.values(s.servers)) {
           if (server.extensions.length && !server.extensions.includes(extension)) continue
-          const root = await server.root(file, ctx)
+          const root = await server.root(normalizedFile, ctx)
           if (!root) continue
           if (s.broken.has(root + server.id)) continue
           return true
         }
         return false
       })
+    })
+
+    yield* Effect.gen(function* () {
+      const s = yield* InstanceState.get(state)
+      for (const server of Object.values(s.servers)) {
+        if (s.indexes.has(server.id)) continue
+        const index = yield* Effect.promise(() =>
+          Index.Index.create({
+            server,
+            getClients: async (file: string) => Effect.runPromise(getClients(file)),
+            hasClients: async (file: string) => Effect.runPromise(hasClients(file)),
+            getClientsByServerId: s.getClientsByServerId,
+          }),
+        )
+        s.indexes.set(server.id, index)
+      }
     })
 
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, waitForDiagnostics?: boolean) {
@@ -392,11 +457,21 @@ export const layer = Layer.effect(
       return results
     })
 
+    const openFile = Effect.fn("LSP.openFile")(function* (input: { path: string }) {
+      const clients = yield* getClients(input.path)
+      yield* Effect.promise(() => Promise.all(clients.map((client) => client.openFile(input))))
+    })
+
+    const closeFile = Effect.fn("LSP.closeFile")(function* (input: { path: string }) {
+      const clients = yield* getClients(input.path)
+      yield* Effect.promise(() => Promise.all(clients.map((client) => client.closeFile(input))))
+    })
+
     const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
-      return yield* run(input.file, (client) =>
+      return yield* run(input.file, (client, file) =>
         client.connection
           .sendRequest("textDocument/hover", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
@@ -404,10 +479,10 @@ export const layer = Layer.effect(
     })
 
     const definition = Effect.fn("LSP.definition")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run(input.file, (client, file) =>
         client.connection
           .sendRequest("textDocument/definition", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
@@ -416,10 +491,10 @@ export const layer = Layer.effect(
     })
 
     const references = Effect.fn("LSP.references")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run(input.file, (client, file) =>
         client.connection
           .sendRequest("textDocument/references", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
             context: { includeDeclaration: true },
           })
@@ -429,10 +504,10 @@ export const layer = Layer.effect(
     })
 
     const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run(input.file, (client, file) =>
         client.connection
           .sendRequest("textDocument/implementation", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
           })
           .catch(() => null),
@@ -442,9 +517,14 @@ export const layer = Layer.effect(
 
     const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string) {
       const file = fileURLToPath(uri)
-      const results = yield* run(file, (client) =>
-        client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []),
-      )
+      const results = yield* run(file, async (client, file) => {
+        await client.openFile({ path: file })
+        try {
+          return await client.documentSymbol({ path: file })
+        } finally {
+          await client.closeFile({ path: file })
+        }
+      })
       return (results.flat() as (DocumentSymbol | Symbol)[]).filter(Boolean)
     })
 
@@ -459,10 +539,10 @@ export const layer = Layer.effect(
     })
 
     const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run(input.file, (client, file) =>
         client.connection
           .sendRequest("textDocument/prepareCallHierarchy", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
           })
           .catch(() => []),
@@ -474,10 +554,10 @@ export const layer = Layer.effect(
       input: LocInput,
       direction: "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls",
     ) {
-      const results = yield* run(input.file, async (client) => {
+      const results = yield* run(input.file, async (client, file) => {
         const items = await client.connection
           .sendRequest<unknown[] | null>("textDocument/prepareCallHierarchy", {
-            textDocument: { uri: pathToFileURL(input.file).href },
+            textDocument: { uri: pathToFileURL(file).href },
             position: { line: input.line, character: input.character },
           })
           .catch(() => [] as unknown[])
@@ -495,10 +575,73 @@ export const layer = Layer.effect(
       return yield* callHierarchyRequest(input, "callHierarchy/outgoingCalls")
     })
 
+    const getSymbolsNow = Effect.fnUntraced(function* (file: string) {
+      const clients = yield* getClients(file)
+      const result = new Map<string, LSPClient.DocumentSymbol[]>()
+      const input = { path: file }
+
+      yield* Effect.promise(() => Promise.all(clients.map((client) => client.openFile(input)).filter(Boolean))).pipe(
+        Effect.catch(() => Effect.void),
+      )
+
+      try {
+        const symbols = yield* Effect.promise(() =>
+          Promise.all(
+            clients.map(async (client) => ({
+              serverID: client.serverID,
+              symbols: await client.documentSymbol(input),
+            })),
+          ),
+        )
+        for (const item of symbols) {
+          result.set(item.serverID, item.symbols.filter(Boolean))
+        }
+      } finally {
+        yield* Effect.promise(() => Promise.all(clients.map((client) => client.closeFile(input)).filter(Boolean))).pipe(
+          Effect.catch(() => Effect.void),
+        )
+      }
+
+      return result
+    })
+
+    const getSymbols = Effect.fn("LSP.getSymbols")(function* (file: string) {
+      return yield* getSymbolsNow(file)
+    })
+
+    const rebuildIndex = Effect.fn("LSP.rebuildIndex")(function* (rebuild?: boolean) {
+      const s = yield* InstanceState.get(state)
+      const extensions = new Set<string>()
+      for (const server of Object.values(s.servers)) {
+        for (const ext of server.extensions) extensions.add(ext)
+      }
+      return yield* Effect.promise(() =>
+        Index.Index.buildIndex({
+          indexes: s.indexes,
+          extensions,
+          rebuild,
+          getSymbols: (file: string) => Effect.runPromise(getSymbolsNow(file)),
+        }),
+      )
+    })
+
+    const searchSymbols = Effect.fn("LSP.searchSymbols")(function* (opts: SearchInput) {
+      const s = yield* InstanceState.get(state)
+      return yield* Effect.promise(async () => {
+        const results: LSPClient.DocumentSymbol[] = []
+        for (const index of s.indexes.values()) {
+          results.push(...(await index.searchSymbols(opts)))
+        }
+        return results
+      })
+    })
+
     return Service.of({
       init,
       status,
       hasClients,
+      openFile,
+      closeFile,
       touchFile,
       diagnostics,
       hover,
@@ -510,6 +653,9 @@ export const layer = Layer.effect(
       prepareCallHierarchy,
       incomingCalls,
       outgoingCalls,
+      rebuildIndex,
+      searchSymbols,
+      getSymbols,
     })
   }),
 )
@@ -517,3 +663,6 @@ export const layer = Layer.effect(
 export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer))
 
 export * as Diagnostic from "./diagnostic"
+export const Format = {
+  pretty: Index.Index.pretty,
+}

@@ -33,6 +33,7 @@ import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { ConfigMarkdown } from "../config"
 import { SessionSummary } from "./summary"
+import { LoopExit } from "./loop-exit"
 import { NamedError } from "@opencode-ai/shared/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool"
@@ -106,6 +107,9 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
+    })
+    const getQuestion = Effect.fnUntraced(function* () {
+      return yield* Question.Service
     })
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       const run = yield* runner()
@@ -1318,12 +1322,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
           let lastUser: MessageV2.User | undefined
+          let lastUserMsg: MessageV2.WithParts | undefined
           let lastAssistant: MessageV2.Assistant | undefined
           let lastFinished: MessageV2.Assistant | undefined
           let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
           for (let i = msgs.length - 1; i >= 0; i--) {
             const msg = msgs[i]
             if (!lastUser && msg.info.role === "user") lastUser = msg.info
+            if (!lastUserMsg && msg.info.role === "user") lastUserMsg = msg
             if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
             if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
             if (lastUser && lastFinished) break
@@ -1332,6 +1338,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          if (!lastUserMsg) throw new Error("No user message found in stream. This should never happen.")
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1349,8 +1356,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             !hasToolCalls &&
             lastUser.id < lastAssistant.id
           ) {
-            yield* slog.info("exiting loop")
-            break
+            const exit = yield* LoopExit.shouldExit({
+              plugin,
+              session,
+              sessions,
+              question: yield* getQuestion(),
+              lastAssistant: lastAssistantMsg,
+              lastUser: lastUserMsg,
+            })
+            if (exit) {
+              yield* slog.info("exiting loop")
+              break
+            }
           }
 
           step++

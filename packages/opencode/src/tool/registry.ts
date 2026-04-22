@@ -23,7 +23,7 @@ import { WebSearchTool } from "./websearch"
 import { CodeSearchTool } from "./codesearch"
 import { Flag } from "@/flag/flag"
 import { Log } from "@/util"
-import { LspTool } from "./lsp"
+import { LspDiagnosticsTool, LspFindSymbolTool, LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/shared/util/glob"
@@ -102,6 +102,8 @@ export const layer: Layer.Layer<
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
+    const lspDiagnosticsTool = yield* LspDiagnosticsTool
+    const lspFindSymbolTool = yield* LspFindSymbolTool
     const plan = yield* PlanExitTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
@@ -193,6 +195,8 @@ export const layer: Layer.Layer<
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
+          lsp_diagnostics: Tool.init(lspDiagnosticsTool),
+          lsp_find_symbol: Tool.init(lspFindSymbolTool),
           plan: Tool.init(plan),
         })
 
@@ -215,6 +219,8 @@ export const layer: Layer.Layer<
             tool.skill,
             tool.patch,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
+            tool.lsp_diagnostics,
+            tool.lsp_find_symbol,
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,

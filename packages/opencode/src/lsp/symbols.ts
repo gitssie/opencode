@@ -1,12 +1,13 @@
 import { pathToFileURL } from "url"
-import { Effect, Layer, ServiceMap } from "effect"
-import { InstanceState } from "@/effect/instance-state"
+import { Effect, Layer, Context } from "effect"
+import * as Stream from "effect/Stream"
+import * as InstanceState from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
-import { Log } from "../util/log"
+import { Log } from "../util"
 import { Instance } from "../project/instance"
 import { DuckDBIPCClient, type ColumnDef } from "./duckdb-ipc-client"
 import { Ripgrep } from "../file/ripgrep"
-import { IGNORE_PATTERNS } from "../tool/ls"
+import { FileIgnore } from "../file/ignore"
 import { Bus } from "../bus"
 import { FileWatcher } from "../file/watcher"
 import path from "path"
@@ -32,7 +33,7 @@ export namespace Index {
     state: () => Effect.Effect<State>
   }
 
-  class Service extends ServiceMap.Service<Service, Interface>()("@opencode/LSP/Index") {}
+  class Service extends Context.Service<Service, Interface>()("@opencode/LSP/Index") {}
 
   const layer = Layer.effect(
     Service,
@@ -78,6 +79,7 @@ export namespace Index {
   )
 
   const { runPromise } = makeRuntime(Service, layer)
+  const ripgrep = makeRuntime(Ripgrep.Service, Ripgrep.defaultLayer)
 
   const getState = () => runPromise((svc) => svc.state())
 
@@ -1037,22 +1039,6 @@ export namespace Index {
       }),
     )
 
-    off.push(
-      Bus.subscribe(LSP.Event.Updated, async (evt) => {
-        if (dead) {
-          return
-        }
-        if (s.rebuildInProgress) {
-          return
-        }
-        const client = evt.properties.client as LSPClient.Info
-        if (client.serverID !== serverID) return
-        buildIndexIncremental(client).catch((error) => {
-          log.error("buildIndexIncremental: failed", { serverID, error })
-        })
-      }),
-    )
-
     async function buildIndex(buffer: FileBuffer): Promise<DocumentSymbol[]> {
       const relativePath = buffer.relativePath
       const currentHash = await buffer.getContentHash()
@@ -1218,15 +1204,17 @@ export namespace Index {
     let fileCount = 0
     try {
       const extensionGlobs = [...extensions].map((ext) => `*${ext}`)
-      const ignoreGlobs = IGNORE_PATTERNS.map((p) => `!${p}*`)
+      const ignoreGlobs = FileIgnore.PATTERNS.map((p) => `!${p}`)
       const globs = [...extensionGlobs, ...ignoreGlobs]
 
       log.info("buildIndex: starting", { extensions: [...extensions], directory: Instance.directory })
 
-      const files: string[] = []
-      for await (const file of Ripgrep.files({ cwd: Instance.directory, glob: globs })) {
-        files.push(file)
-      }
+      const files = await ripgrep.runPromise((svc) =>
+        svc.files({ cwd: Instance.directory, glob: globs }).pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => [...chunk]),
+        ),
+      )
       fileCount = files.length
 
       for (const file of files) {
@@ -1284,18 +1272,24 @@ export namespace Index {
     const key = `${client.serverID}:${client.root}`
     const s = await getState()
 
+    while (s.rebuildInProgress) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+
     // 检查是否已经在构建中
     const existing = s.buildingClients.get(key)
     if (existing) {
       return existing
     }
 
+    s.rebuildInProgress = true
     const buildPromise = doBuildIndexForClient(index, client, extensions)
     s.buildingClients.set(key, buildPromise)
 
     try {
       return await buildPromise
     } finally {
+      s.rebuildInProgress = false
       s.buildingClients.delete(key)
     }
   }
@@ -1314,7 +1308,7 @@ export namespace Index {
     let errors = 0
 
     const extensionGlobs = extensions.map((ext) => `*${ext}`)
-    const ignoreGlobs = IGNORE_PATTERNS.map((p) => `!${p}*`)
+    const ignoreGlobs = FileIgnore.PATTERNS.map((p) => `!${p}`)
     const globs = [...extensionGlobs, ...ignoreGlobs]
 
     log.info("buildIndexForClient: starting", { serverID: client.serverID, root: client.root, extensions })
@@ -1322,7 +1316,12 @@ export namespace Index {
     const appender = index.createAppender(true)
 
     try {
-      for await (const file of Ripgrep.files({ cwd: client.root, glob: globs })) {
+      for (const file of await ripgrep.runPromise((svc) =>
+        svc.files({ cwd: client.root, glob: globs }).pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => [...chunk]),
+        ),
+      )) {
         const fullPath = path.join(client.root, file)
         const relativePath = path.relative(Instance.directory, fullPath).replace(/\\/g, "/")
 

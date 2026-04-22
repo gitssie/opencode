@@ -5,6 +5,9 @@ import { bootstrap } from "../../bootstrap"
 import { cmd } from "../cmd"
 import { Log } from "../../../util"
 import { EOL } from "os"
+import { pathToFileURL } from "url"
+import type { LSPClient } from "../../../lsp/client"
+import path from "path"
 
 export const LSPCommand = cmd({
   command: "lsp",
@@ -29,8 +32,9 @@ const DiagnosticsCommand = cmd({
       const out = await AppRuntime.runPromise(
         LSP.Service.use((lsp) =>
           Effect.gen(function* () {
-            yield* lsp.touchFile(args.file, true)
-            yield* Effect.sleep(1000)
+            const file = path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)
+            yield* lsp.touchFile(file, true)
+            yield* Effect.sleep(30000)
             return yield* lsp.diagnostics()
           }),
         ),
@@ -60,7 +64,13 @@ export const DocumentSymbolsCommand = cmd({
   async handler(args) {
     await bootstrap(process.cwd(), async () => {
       using _ = Log.Default.time("document-symbols")
-      const results = await AppRuntime.runPromise(LSP.Service.use((lsp) => lsp.documentSymbol(args.uri)))
+      const results = await AppRuntime.runPromise(
+        LSP.Service.use((lsp) =>
+          lsp.documentSymbol(
+            pathToFileURL(path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)).href,
+          ),
+        ),
+      )
       process.stdout.write(JSON.stringify(results, null, 2) + EOL)
     })
   },
@@ -73,7 +83,7 @@ const BuildIndexCommand = cmd({
   async handler() {
     await bootstrap(process.cwd(), async () => {
       using _ = Log.Default.time("build-index")
-      await LSP.rebuildIndex(true)
+      await AppRuntime.runPromise(LSP.Service.use((lsp) => lsp.rebuildIndex(true)))
       process.stdout.write("Symbol index rebuilt successfully" + EOL)
     })
   },
@@ -92,14 +102,18 @@ const SearchSymbolsCommand = cmd({
   async handler(args) {
     await bootstrap(process.cwd(), async () => {
       using _ = Log.Default.time("search-symbols")
-      const results = await LSP.searchSymbols({
-        namePathRegex: args.pattern,
-        relativePathRegex: args["search-in"],
-        includeBody: args["include-body"],
-        includeKinds: args["include-kinds"]?.map(Number),
-        excludeKinds: args["exclude-kinds"]?.map(Number),
-      })
-      const prettyResults = await LSP.Format.pretty(results, {
+      const results = await AppRuntime.runPromise(
+        LSP.Service.use((lsp) =>
+          lsp.searchSymbols({
+            namePathRegex: args.pattern,
+            relativePathRegex: args["search-in"],
+            includeBody: args["include-body"],
+            includeKinds: args["include-kinds"]?.map(Number),
+            excludeKinds: args["exclude-kinds"]?.map(Number),
+          }),
+        ),
+      )
+      const prettyResults = await LSP.Format.pretty(results as LSPClient.DocumentSymbol[], {
         kind: true,
         location: true,
         includeBody: args["include-body"],

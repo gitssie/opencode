@@ -1,4 +1,4 @@
-import * as LSPClient from "./client"
+import { LSPClient } from "./client"
 
 const MAX_PER_FILE = 20
 
