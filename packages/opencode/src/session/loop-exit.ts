@@ -41,7 +41,7 @@ export namespace LoopExit {
           options: Array<{ label: string; description: string }>
           multiple?: boolean
         }>,
-      ) => Promise<string[][]>
+      ) => Promise<ReadonlyArray<Question.Answer>>
     }
   }
 

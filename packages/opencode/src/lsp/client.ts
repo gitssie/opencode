@@ -410,3 +410,5 @@ export namespace LSPClient {
     return result
   }
 }
+
+export const create = LSPClient.create

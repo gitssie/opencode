@@ -2938,3 +2938,7 @@ export namespace LSPServer {
     },
   }
 }
+
+export type Handle = LSPServer.Handle
+export type Info = LSPServer.Info
+export const Typescript = LSPServer.Typescript

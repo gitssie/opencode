@@ -30,8 +30,14 @@ describe("LSPClient interop", () => {
         LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => process.cwd(),
+            spawn: async () => undefined,
+          },
           root: process.cwd(),
-          directory: process.cwd(),
+          getClients: async () => [],
         }),
     })
 
@@ -55,8 +61,14 @@ describe("LSPClient interop", () => {
         LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => process.cwd(),
+            spawn: async () => undefined,
+          },
           root: process.cwd(),
-          directory: process.cwd(),
+          getClients: async () => [],
         }),
     })
 
@@ -80,8 +92,14 @@ describe("LSPClient interop", () => {
         LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => process.cwd(),
+            spawn: async () => undefined,
+          },
           root: process.cwd(),
-          directory: process.cwd(),
+          getClients: async () => [],
         }),
     })
 
