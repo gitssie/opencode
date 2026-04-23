@@ -412,7 +412,7 @@ export const layer = Layer.effect(
       })
     })
 
-    yield* Effect.gen(function* () {
+    const ensureIndexes = Effect.fnUntraced(function* () {
       const s = yield* InstanceState.get(state)
       for (const server of Object.values(s.servers)) {
         if (s.indexes.has(server.id)) continue
@@ -610,6 +610,7 @@ export const layer = Layer.effect(
     })
 
     const rebuildIndex = Effect.fn("LSP.rebuildIndex")(function* (rebuild?: boolean) {
+      yield* ensureIndexes()
       const s = yield* InstanceState.get(state)
       const extensions = new Set<string>()
       for (const server of Object.values(s.servers)) {
@@ -626,6 +627,7 @@ export const layer = Layer.effect(
     })
 
     const searchSymbols = Effect.fn("LSP.searchSymbols")(function* (opts: SearchInput) {
+      yield* ensureIndexes()
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
         const results: LSPClient.DocumentSymbol[] = []
