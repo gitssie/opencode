@@ -156,7 +156,8 @@ export function create(tags?: Record<string, any>) {
       return result
     },
     clone() {
-      return create({ ...tags })
+      const { service: _, ...rest } = tags ?? {}
+      return create({ ...rest })
     },
     time(message: string, extra?: Record<string, any>) {
       const now = Date.now()
