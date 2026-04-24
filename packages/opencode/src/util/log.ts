@@ -28,7 +28,7 @@ export type Logger = {
   error(message?: any, extra?: Record<string, any>): void
   warn(message?: any, extra?: Record<string, any>): void
   tag(key: string, value: string): Logger
-  clone(): Logger
+  clone(tags?: Record<string, any>): Logger
   time(
     message: string,
     extra?: Record<string, any>,
@@ -105,7 +105,7 @@ export function create(tags?: Record<string, any>) {
   tags = tags || {}
 
   const service = tags["service"]
-  if (service && typeof service === "string" && Object.keys(tags).length === 1) {
+  if (service && typeof service === "string") {
     const cached = loggers.get(service)
     if (cached) {
       return cached
@@ -155,8 +155,8 @@ export function create(tags?: Record<string, any>) {
       if (tags) tags[key] = value
       return result
     },
-    clone() {
-      return create({ ...tags })
+    clone(tags_new?: Record<string, any>) {
+      return create({ ...tags_new, ...tags })
     },
     time(message: string, extra?: Record<string, any>) {
       const now = Date.now()
