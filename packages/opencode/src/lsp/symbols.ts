@@ -1272,10 +1272,6 @@ export namespace Index {
     const key = `${client.serverID}:${client.root}`
     const s = await getState()
 
-    while (s.rebuildInProgress) {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-
     // 检查是否已经在构建中
     const existing = s.buildingClients.get(key)
     if (existing) {
