@@ -105,7 +105,7 @@ export function create(tags?: Record<string, any>) {
   tags = tags || {}
 
   const service = tags["service"]
-  if (service && typeof service === "string") {
+  if (service && typeof service === "string" && Object.keys(tags).length === 1) {
     const cached = loggers.get(service)
     if (cached) {
       return cached
@@ -156,8 +156,7 @@ export function create(tags?: Record<string, any>) {
       return result
     },
     clone() {
-      const { service: _, ...rest } = tags ?? {}
-      return create({ ...rest })
+      return create({ ...tags })
     },
     time(message: string, extra?: Record<string, any>) {
       const now = Date.now()
