@@ -964,17 +964,6 @@ export namespace Index {
       return clients ? clients.length > 0 : false
     }
 
-    const buildIndexIncremental = async (client: LSPClient.Info) => {
-      if (dead) return
-      const extensions = input.server.extensions
-      s.rebuildInProgress = true
-      try {
-        await buildIndexForClient({ index, client, extensions })
-      } finally {
-        s.rebuildInProgress = false
-      }
-    }
-
     const initializeIndex = async () => {
       if (dead) {
         return
