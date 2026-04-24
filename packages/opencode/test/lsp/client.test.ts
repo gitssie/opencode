@@ -118,8 +118,14 @@ describe("LSPClient interop", () => {
         LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => process.cwd(),
+            spawn: async () => undefined,
+          },
           root: process.cwd(),
-          directory: process.cwd(),
+          getClients: async () => [],
         }),
     })
 
@@ -148,8 +154,14 @@ describe("LSPClient interop", () => {
             ...(handle as unknown as LSPServer.Handle),
             initialization,
           },
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => process.cwd(),
+            spawn: async () => undefined,
+          },
           root: process.cwd(),
-          directory: process.cwd(),
+          getClients: async () => [],
         }),
     })
 
@@ -174,8 +186,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         await client.notify.open({ path: file })
@@ -217,8 +235,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         const version = await client.notify.open({ path: file })
@@ -263,8 +287,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         const version = await client.notify.open({ path: file })
@@ -310,8 +340,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         await client.connection.sendRequest("test/configure-pull-diagnostics", {
@@ -358,8 +394,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         await client.connection.sendRequest("test/configure-pull-diagnostics", {
@@ -411,8 +453,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         await client.connection.sendRequest("test/configure-pull-diagnostics", {
@@ -475,8 +523,14 @@ describe("LSPClient interop", () => {
         const client = await LSPClient.create({
           serverID: "fake",
           server: handle as unknown as LSPServer.Handle,
+          info: {
+            id: "fake",
+            extensions: [],
+            root: async () => tmp.path,
+            spawn: async () => undefined,
+          },
           root: tmp.path,
-          directory: tmp.path,
+          getClients: async () => [],
         })
 
         await client.connection.sendRequest("test/configure-pull-diagnostics", {

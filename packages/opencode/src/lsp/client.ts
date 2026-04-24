@@ -296,14 +296,16 @@ export namespace LSPClient {
           state.refs = 0
           state.touched = true
         })
+        return files.get(abs(touchInput.path))?.version ?? 0
       },
       notify: {
-        async open(openInput: { path: string }) {
-          await result.touchFile(openInput)
-          if (!diagnosticsFromLSP) return
+        async open(openInput: { path: string }): Promise<number> {
+          const version = await result.touchFile(openInput)
+          if (!diagnosticsFromLSP) return version
           const filePath = abs(openInput.path)
           const diagnosticsInfo = await diagnosticsFromLSP({ path: filePath }).catch(() => [])
           publishDiagnostics(filePath, diagnosticsInfo)
+          return version
         },
       },
       async openFile(openInput: { path: string }) {
@@ -369,7 +371,7 @@ export namespace LSPClient {
       get diagnostics() {
         return diagnostics
       },
-      async waitForDiagnostics(request: { path: string }) {
+      async waitForDiagnostics(request: { path: string; version?: number; mode?: string; after?: number }) {
         const normalizedPath = abs(request.path)
         log.info("waiting for diagnostics", { path: normalizedPath })
         let unsub: () => void

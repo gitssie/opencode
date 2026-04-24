@@ -13,7 +13,6 @@ import { FileWatcher } from "../file/watcher"
 import path from "path"
 import { LSPClient } from "./client"
 import type { Location as VSCodeLocation } from "vscode-languageserver-types"
-import { LSP } from "."
 import type { LSPServer } from "./server"
 
 export namespace Index {
@@ -23,7 +22,6 @@ export namespace Index {
     getClient: Effect.Effect<DuckDBIPCClient>
     client?: DuckDBIPCClient
     counter: number
-    rebuildInProgress: boolean
     buildingClients: Map<string, Promise<{ indexed: number; skipped: number; errors: number }>>
     pendingUpdates: Map<string, Map<string, { event: string }>>
     flushTimers: Map<string, ReturnType<typeof setTimeout>>
@@ -44,7 +42,6 @@ export namespace Index {
             getClient: undefined as never,
             client: undefined,
             counter: 1,
-            rebuildInProgress: false,
             buildingClients: new Map(),
             pendingUpdates: new Map(),
             flushTimers: new Map(),
@@ -189,9 +186,7 @@ export namespace Index {
   // ==================== Abstract Interface ====================
 
   export interface SymbolIndex {
-    start(): void
     stop(): void
-    isStarted(): boolean
 
     isDocCached(relativePath: string, contentHash: string): Promise<boolean>
     storeDocSymbols(relativePath: string, contentHash: string, symbols: DocumentSymbol[]): Promise<void>
@@ -273,15 +268,9 @@ export namespace Index {
   export class DuckDBIndex implements SymbolIndex {
     private schemaName: string
     private schemaInitialized = false
-    private started = false
 
     constructor(schemaName: string = "symbols") {
       this.schemaName = schemaName.replace(/[^a-zA-Z0-9_]/g, "_")
-    }
-
-    start(): void {
-      this.started = true
-      this.schemaInitialized = false
     }
 
     private async ensureInit(): Promise<DuckDBIPCClient> {
@@ -294,14 +283,7 @@ export namespace Index {
     }
 
     stop(): void {
-      if (this.started) {
-        this.started = false
-        this.schemaInitialized = false
-      }
-    }
-
-    isStarted(): boolean {
-      return this.started
+      this.schemaInitialized = false
     }
 
     private async exec(sql: string): Promise<void> {
@@ -935,12 +917,11 @@ export namespace Index {
     getClientsByServerId: (serverID: string) => Promise<LSPClient.Info[]>
   }) {
     const serverID = input.server.id
-    const index = new DuckDBIndex(serverID)
     const s = await getState()
     const off: Array<() => void> = []
     let dead = false
 
-    index.start()
+    const index = new DuckDBIndex(serverID)
 
     const cleanup = () => {
       if (dead) return
@@ -964,71 +945,79 @@ export namespace Index {
       return clients ? clients.length > 0 : false
     }
 
+    const subscribe = () => {
+      off.push(
+        Bus.subscribe(FileWatcher.Event.Updated, async (evt) => {
+          if (dead) {
+            return
+          }
+          if ((await hasClients(serverID)) == false) {
+            return
+          }
+          const absolutePath = evt.properties.file
+          const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
+
+          if (!s.pendingUpdates.has(serverID)) {
+            s.pendingUpdates.set(serverID, new Map())
+          }
+
+          const pending = s.pendingUpdates.get(serverID)!
+          pending.set(relativePath, { event: evt.properties.event })
+
+          if (!s.flushTimers.has(serverID)) {
+            s.flushTimers.set(
+              serverID,
+              setTimeout(async () => {
+                if (dead) return
+                s.flushTimers.delete(serverID)
+                const pending = s.pendingUpdates.get(serverID)
+                if (!pending || pending.size === 0) return
+
+                const updates = new Map(pending)
+                pending.clear()
+
+                await flushPendingUpdates({
+                  index,
+                  updates,
+                  getClients,
+                  serverID,
+                })
+              }, 2000),
+            )
+          }
+        }),
+      )
+    }
+
     const initializeIndex = async () => {
       if (dead) {
         return
       }
-      if (s.rebuildInProgress) {
-        return
-      }
-      s.rebuildInProgress = true
-      try {
-        const clients = await input.getClientsByServerId(serverID)
-        for (const client of clients) {
-          await buildIndexForClient({ index, client, extensions: input.server.extensions })
-        }
-      } finally {
-        s.rebuildInProgress = false
+      const clients = await input.getClientsByServerId(serverID)
+      for (const client of clients) {
+        await buildIndexForClient({ index, client, extensions: input.server.extensions })
       }
     }
 
-    // 订阅文件变更事件
-    off.push(
-      Bus.subscribe(FileWatcher.Event.Updated, async (evt) => {
-        if (dead) {
-          return
-        }
-        if ((await hasClients(serverID)) == false) {
-          return
-        }
-        const absolutePath = evt.properties.file
-        const relativePath = path.relative(Instance.directory, absolutePath).replace(/\\/g, "/")
+    let initialized = false
+    let buildPromise: Promise<void> | undefined
 
-        // 确保当前 serverID 的 pendingUpdates 存在
-        if (!s.pendingUpdates.has(serverID)) {
-          s.pendingUpdates.set(serverID, new Map())
-        }
+    const ensureInit = () => {
+      if (initialized) return
+      initialized = true
+      subscribe()
+    }
 
-        // 收集到 pending，使用 relativePath 作为 key
-        const pending = s.pendingUpdates.get(serverID)!
-        pending.set(relativePath, { event: evt.properties.event })
+    const ensureBuild = () => {
+      ensureInit()
+      if (!buildPromise) {
+        buildPromise = Promise.race([initializeIndex(), new Promise<void>((resolve) => setTimeout(resolve, 15000))])
+      }
+      return buildPromise
+    }
 
-        // 只在没有 timer 时创建
-        if (!s.flushTimers.has(serverID)) {
-          s.flushTimers.set(
-            serverID,
-            setTimeout(async () => {
-              if (dead) return
-              s.flushTimers.delete(serverID)
-              const pending = s.pendingUpdates.get(serverID)
-              if (!pending || pending.size === 0) return
-
-              const updates = new Map(pending)
-              pending.clear()
-
-              await flushPendingUpdates({
-                index,
-                updates,
-                getClients,
-                serverID,
-              })
-            }, 2000),
-          )
-        }
-      }),
-    )
-
-    async function buildIndex(buffer: FileBuffer): Promise<DocumentSymbol[]> {
+    async function refreshFileSymbols(buffer: FileBuffer): Promise<DocumentSymbol[]> {
+      ensureInit()
       const relativePath = buffer.relativePath
       const currentHash = await buffer.getContentHash()
 
@@ -1047,14 +1036,6 @@ export namespace Index {
       return res
     }
 
-    // 启动时初始化索引
-    try {
-      await initializeIndex()
-    } catch (error) {
-      cleanup()
-      throw error
-    }
-
     return {
       serverID,
       appender: index.createAppender(true),
@@ -1068,7 +1049,7 @@ export namespace Index {
         includeKinds?: number[]
         excludeKinds?: number[]
       }): Promise<DocumentSymbol[]> {
-        // Optimize namePathRegex: simple string matches symbol name (last segment)
+        await ensureBuild()
         const optimizedPattern = optimizeNamePathPattern(opts.namePathRegex)
         const optimizedOpts = { ...opts, namePathRegex: optimizedPattern }
         const namePathRegex = optimizedPattern ? new RegExp(optimizedPattern) : null
@@ -1076,7 +1057,6 @@ export namespace Index {
 
         const allSymbols: DocumentSymbol[] = []
         const bufferCache = new FileBufferCache()
-        const filteredDocResults: Document[] = []
         const deletedDocIds: string[] = []
 
         for (const docResult of docResults) {
@@ -1084,60 +1064,37 @@ export namespace Index {
           const absolutePath = path.join(Instance.directory, relativePath)
           const buffer = await bufferCache.get(absolutePath, relativePath)
 
-          // 检查文件是否存在
           if (!(await buffer.exists())) {
             deletedDocIds.push(docResult.id)
             continue
           }
 
           const currentHash = await buffer.getContentHash()
+          let symbols: DocumentSymbol[]
 
           if (docResult.contentHash === currentHash) {
-            filteredDocResults.push(docResult)
+            symbols = docResult.symbols
           } else {
             log.debug("File modified (hash mismatch), updating symbols", { relativePath })
-            const symbols = await buildIndex(buffer)
-            if (symbols.length > 0) {
-              const filteredSymbols = filterSymbols(symbols, {
-                namePathRegex,
-                includeKinds: opts.includeKinds,
-                excludeKinds: opts.excludeKinds,
-              })
-              if (filteredSymbols.length > 0) {
-                filteredDocResults.push({
-                  id: docResult.id,
-                  relativePath,
-                  contentHash: currentHash,
-                  symbols: filteredSymbols,
-                })
-              }
-            }
-          }
-        }
-
-        for (const docResult of filteredDocResults) {
-          const relativePath = docResult.relativePath
-          const absolutePath = path.join(Instance.directory, relativePath)
-          const buffer = await bufferCache.get(absolutePath, relativePath)
-
-          // 如果需要 body，获取文件行
-          let fileLines: string[] | null = null
-          if (opts.includeBody) {
-            fileLines = await buffer.splitLines()
+            const fresh = await refreshFileSymbols(buffer)
+            symbols = filterSymbols(fresh, {
+              namePathRegex,
+              includeKinds: opts.includeKinds,
+              excludeKinds: opts.excludeKinds,
+            })
           }
 
-          // 递归处理符号及其子符号
-          const addSymbolsWithLocation = (symbols: DocumentSymbol[]) => {
-            for (const sym of symbols) {
+          if (symbols.length === 0) continue
+
+          const fileLines = opts.includeBody ? await buffer.splitLines() : null
+
+          const addSymbolsWithLocation = (syms: DocumentSymbol[]) => {
+            for (const sym of syms) {
               let body = sym.body
-              // 如果需要 body 但符号中没有，从文件中提取
               if (opts.includeBody && !body && fileLines) {
-                const startLine = sym.range.start.line
-                const endLine = sym.range.end.line
-                body = fileLines.slice(startLine, endLine + 1).join("\n")
+                body = fileLines.slice(sym.range.start.line, sym.range.end.line + 1).join("\n")
               }
-
-              const symbolWithLocation: DocumentSymbol = {
+              allSymbols.push({
                 ...sym,
                 body,
                 location: {
@@ -1146,19 +1103,14 @@ export namespace Index {
                   absolutePath,
                   relativePath,
                 },
-              }
-              allSymbols.push(symbolWithLocation)
-
-              if (sym.children) {
-                addSymbolsWithLocation(sym.children as DocumentSymbol[])
-              }
+              })
+              if (sym.children) addSymbolsWithLocation(sym.children as DocumentSymbol[])
             }
           }
 
-          addSymbolsWithLocation(docResult.symbols)
+          addSymbolsWithLocation(symbols)
         }
 
-        // 清理已删除文件的索引
         if (deletedDocIds.length > 0) {
           log.debug("Files no longer exist, invalidating indexes", { count: deletedDocIds.length })
           await index.invalidateDocs(deletedDocIds)
@@ -1182,72 +1134,67 @@ export namespace Index {
     rebuild?: boolean
   }): Promise<{ indexed: number; skipped: number; errors: number }> {
     const { indexes, extensions, getSymbols, rebuild } = options
-    const s = await getState()
     if (extensions.size === 0) {
       return { indexed: 0, skipped: 0, errors: 0 }
     }
-    s.rebuildInProgress = true
     let indexed = 0
     let skipped = 0
     let errors = 0
     let fileCount = 0
-    try {
-      const extensionGlobs = [...extensions].map((ext) => `*${ext}`)
-      const ignoreGlobs = FileIgnore.PATTERNS.map((p) => `!${p}`)
-      const globs = [...extensionGlobs, ...ignoreGlobs]
 
-      log.info("buildIndex: starting", { extensions: [...extensions], directory: Instance.directory })
+    const extensionGlobs = [...extensions].map((ext) => `*${ext}`)
+    const ignoreGlobs = FileIgnore.PATTERNS.map((p) => `!${p}`)
+    const globs = [...extensionGlobs, ...ignoreGlobs]
 
-      const files = await ripgrep.runPromise((svc) =>
-        svc.files({ cwd: Instance.directory, glob: globs }).pipe(
-          Stream.runCollect,
-          Effect.map((chunk) => [...chunk]),
-        ),
-      )
-      fileCount = files.length
+    log.info("buildIndex: starting", { extensions: [...extensions], directory: Instance.directory })
 
-      for (const file of files) {
-        const fullPath = path.join(Instance.directory, file)
-        const relativePath = file.replace(/\\/g, "/")
+    const files = await ripgrep.runPromise((svc) =>
+      svc.files({ cwd: Instance.directory, glob: globs }).pipe(
+        Stream.runCollect,
+        Effect.map((chunk) => [...chunk]),
+      ),
+    )
+    fileCount = files.length
 
-        try {
-          const content = await Bun.file(fullPath)
-            .text()
-            .catch(() => "")
-          const hash = Bun.hash(content).toString()
+    for (const file of files) {
+      const fullPath = path.join(Instance.directory, file)
+      const relativePath = file.replace(/\\/g, "/")
 
-          const symbolsByServer = await getSymbols(relativePath)
+      try {
+        const content = await Bun.file(fullPath)
+          .text()
+          .catch(() => "")
+        const hash = Bun.hash(content).toString()
 
-          for (const [serverId, symbols] of symbolsByServer) {
-            const index = indexes.get(serverId)
-            if (!index) {
-              log.warn("buildIndex: no index found for server", { serverId })
-              continue
-            }
+        const symbolsByServer = await getSymbols(relativePath)
 
-            if (!rebuild && (await index.isDocCached(relativePath, hash))) {
-              skipped++
-              continue
-            }
-            if (symbols?.length > 0) {
-              await index.appender.append(relativePath, hash, symbols)
-            }
+        for (const [serverId, symbols] of symbolsByServer) {
+          const index = indexes.get(serverId)
+          if (!index) {
+            log.warn("buildIndex: no index found for server", { serverId })
+            continue
           }
-          indexed++
-        } catch (e) {
-          errors++
-          log.debug("buildIndex: error", { file, error: e })
+
+          if (!rebuild && (await index.isDocCached(relativePath, hash))) {
+            skipped++
+            continue
+          }
+          if (symbols?.length > 0) {
+            await index.appender.append(relativePath, hash, symbols)
+          }
         }
+        indexed++
+      } catch (e) {
+        errors++
+        log.debug("buildIndex: error", { file, error: e })
       }
-
-      for (const index of indexes.values()) {
-        await index.appender.commit()
-      }
-
-      log.info("buildIndex: completed", { indexed, skipped, errors, fileCount })
-    } finally {
-      s.rebuildInProgress = false
     }
+
+    for (const index of indexes.values()) {
+      await index.appender.commit()
+    }
+
+    log.info("buildIndex: completed", { indexed, skipped, errors, fileCount })
     return { indexed, skipped, errors }
   }
 
@@ -1256,25 +1203,23 @@ export namespace Index {
     index: SymbolIndex
     client: LSPClient.Info
     extensions: string[]
+    rebuild?: boolean
   }): Promise<{ indexed: number; skipped: number; errors: number }> {
-    const { index, client, extensions } = options
+    const { index, client, extensions, rebuild } = options
     const key = `${client.serverID}:${client.root}`
     const s = await getState()
 
-    // 检查是否已经在构建中
     const existing = s.buildingClients.get(key)
     if (existing) {
       return existing
     }
 
-    s.rebuildInProgress = true
-    const buildPromise = doBuildIndexForClient(index, client, extensions)
+    const buildPromise = doBuildIndexForClient(index, client, extensions, rebuild)
     s.buildingClients.set(key, buildPromise)
 
     try {
       return await buildPromise
     } finally {
-      s.rebuildInProgress = false
       s.buildingClients.delete(key)
     }
   }
@@ -1283,6 +1228,7 @@ export namespace Index {
     index: SymbolIndex,
     client: LSPClient.Info,
     extensions: string[],
+    rebuild?: boolean,
   ): Promise<{ indexed: number; skipped: number; errors: number }> {
     if (extensions.length === 0) {
       return { indexed: 0, skipped: 0, errors: 0 }
@@ -1316,7 +1262,7 @@ export namespace Index {
             .catch(() => "")
           const hash = Bun.hash(content).toString()
 
-          if (await index.isDocCached(relativePath, hash)) {
+          if (!rebuild && (await index.isDocCached(relativePath, hash))) {
             skipped++
             continue
           }
