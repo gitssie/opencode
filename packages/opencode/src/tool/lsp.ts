@@ -1,5 +1,4 @@
-import z from "zod"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import path from "path"
 import { LSP } from "../lsp"
@@ -7,7 +6,7 @@ import DESCRIPTION from "./lsp.txt"
 import { Instance } from "../project/instance"
 import { pathToFileURL } from "url"
 import { assertExternalDirectoryEffect } from "./external-directory"
-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -24,20 +23,25 @@ const operations = [
   "outgoingCalls",
 ] as const
 
+export const Parameters = Schema.Struct({
+  operation: Schema.Literals(operations).annotate({ description: "The LSP operation to perform" }),
+  filePath: Schema.String.annotate({ description: "The absolute or relative path to the file" }),
+  line: Schema.Number.check(Schema.isInt())
+    .check(Schema.isGreaterThanOrEqualTo(1))
+    .annotate({ description: "The line number (1-based, as shown in editors)" }),
+  character: Schema.Number.check(Schema.isInt())
+    .check(Schema.isGreaterThanOrEqualTo(1))
+    .annotate({ description: "The character offset (1-based, as shown in editors)" }),
+})
+
 export const LspTool = Tool.define(
   "lsp",
   Effect.gen(function* () {
     const lsp = yield* LSP.Service
     const fs = yield* AppFileSystem.Service
-
     return {
       description: DESCRIPTION,
-      parameters: z.object({
-        operation: z.enum(operations).describe("The LSP operation to perform"),
-        filePath: z.string().describe("The absolute or relative path to the file"),
-        line: z.number().int().min(1).describe("The line number (1-based, as shown in editors)"),
-        character: z.number().int().min(1).describe("The character offset (1-based, as shown in editors)"),
-      }),
+      parameters: Parameters,
       execute: (
         args: { operation: (typeof operations)[number]; filePath: string; line: number; character: number },
         ctx: Tool.Context,
@@ -45,12 +49,29 @@ export const LspTool = Tool.define(
         Effect.gen(function* () {
           const file = path.isAbsolute(args.filePath) ? args.filePath : path.join(Instance.directory, args.filePath)
           yield* assertExternalDirectoryEffect(ctx, file)
-          yield* ctx.ask({ permission: "lsp", patterns: ["*"], always: ["*"], metadata: {} })
+          const meta =
+            args.operation === "workspaceSymbol"
+              ? { operation: args.operation }
+              : args.operation === "documentSymbol"
+                ? { operation: args.operation, filePath: file }
+                : { operation: args.operation, filePath: file, line: args.line, character: args.character }
+          yield* ctx.ask({
+            permission: "lsp",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: meta,
+          })
 
           const uri = pathToFileURL(file).href
           const position = { file, line: args.line - 1, character: args.character - 1 }
           const relPath = path.relative(Instance.worktree, file)
-          const title = `${args.operation} ${relPath}:${args.line}:${args.character}`
+          const detail =
+            args.operation === "workspaceSymbol"
+              ? ""
+              : args.operation === "documentSymbol"
+                ? relPath
+                : `${relPath}:${args.line}:${args.character}`
+          const title = detail ? `${args.operation} ${detail}` : args.operation
 
           const exists = yield* fs.existsSafe(file)
           if (!exists) throw new Error(`File not found: ${file}`)
@@ -104,8 +125,8 @@ export const LspDiagnosticsTool = Tool.define(
     return {
       description:
         "Get LSP diagnostics (errors and warnings) for a file. This tool checks the file for compilation errors, type errors, and other issues reported by the language server.",
-      parameters: z.object({
-        filePath: z.string().describe("The relative path to the file to check for diagnostics"),
+      parameters: Schema.Struct({
+        filePath: Schema.String.annotate({ description: "The relative path to the file to check for diagnostics" }),
       }),
       execute: (args: { filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {
@@ -159,32 +180,24 @@ export const LspFindSymbolTool = Tool.define(
     return {
       description:
         "Search for symbols (classes, functions, methods, variables) using regex patterns. Returns matched symbols with their locations. Use pattern to match symbol name paths like 'MyClass/myMethod'.",
-      parameters: z.object({
-        pattern: z.string().describe("Regular expression to match symbol name paths (what to search for)"),
-        search_in: z
-          .string()
-          .optional()
-          .describe("Where to search (file path, directory, or regex). Empty = search everywhere."),
-        include_body: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe("Include symbol source code in results (use carefully, increases size)"),
-        include_kinds: z
-          .array(z.number())
-          .optional()
-          .describe(
+      parameters: Schema.Struct({
+        pattern: Schema.String.annotate({ description: "Regular expression to match symbol name paths (what to search for)" }),
+        search_in: Schema.optional(Schema.String).annotate({
+          description: "Where to search (file path, directory, or regex). Empty = search everywhere.",
+        }),
+        include_body: Schema.optional(Schema.Boolean).annotate({
+          description: "Include symbol source code in results (use carefully, increases size)",
+        }),
+        include_kinds: Schema.optional(Schema.Array(Schema.Number)).annotate({
+          description:
             "List of LSP symbol kinds to include. Common: 5=class, 6=method, 12=function, 13=variable, 10=enum, 11=interface. Full list: 1=file, 2=module, 3=namespace, 4=package, 5=class, 6=method, 7=property, 8=field, 9=constructor, 10=enum, 11=interface, 12=function, 13=variable, 14=constant, 22=enum member, 23=struct. Empty = include all.",
-          ),
-        exclude_kinds: z
-          .array(z.number())
-          .optional()
-          .describe("Symbol kinds to exclude (takes precedence over include_kinds)"),
-        max_answer_chars: z
-          .number()
-          .optional()
-          .default(50000)
-          .describe("Max result size in characters (default 50000)"),
+        }),
+        exclude_kinds: Schema.optional(Schema.Array(Schema.Number)).annotate({
+          description: "Symbol kinds to exclude (takes precedence over include_kinds)",
+        }),
+        max_answer_chars: Schema.optional(Schema.Number).annotate({
+          description: "Max result size in characters (default 50000)",
+        }),
       }),
       execute: (
         args: {
@@ -228,7 +241,7 @@ export const LspFindSymbolTool = Tool.define(
             metadata: { count: symbols.length },
             output: symbols.length === 0 ? "No symbols found matching the pattern." : output,
           }
-        }),
+        }).pipe(Effect.orDie),
     }
   }),
 )

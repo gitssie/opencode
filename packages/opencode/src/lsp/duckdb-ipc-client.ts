@@ -3,8 +3,8 @@ import crypto from "crypto"
 import path from "path"
 import { lstat, mkdir, readlink, rm, symlink, writeFile } from "fs/promises"
 import { Log } from "../util"
-import { Global } from "../global"
-import { Npm } from "../npm"
+import { Global } from "@opencode-ai/core/global"
+import { Npm } from "@opencode-ai/core/npm"
 
 const log = Log.create({ service: "lsp.duckdb-ipc" })
 

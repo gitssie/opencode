@@ -7,12 +7,12 @@ import { pathToFileURL, fileURLToPath } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
 import { Config } from "../config"
-import { Flag } from "@/flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { Process } from "../util"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect"
-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Index from "./symbols"
 import { withStatics } from "@/util/schema"
 import { zod, ZodOverride } from "@/util/effect-zod"
@@ -22,11 +22,11 @@ const log = Log.create({ service: "lsp" })
 export const Event = {
   Updated: BusEvent.define(
     "lsp.updated",
-    z.object({
-      serverID: z.string(),
-      root: z.string(),
-      client: z.unknown(),
-      extensions: z.array(z.string()),
+    Schema.Struct({
+      serverID: Schema.String,
+      root: Schema.String,
+      client: Schema.Unknown,
+      extensions: Schema.Array(Schema.String),
     }),
   ),
 }

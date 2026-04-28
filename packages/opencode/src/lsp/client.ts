@@ -12,11 +12,11 @@ import { Process } from "../util"
 import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
 import type { LSPServer } from "./server"
-import { NamedError } from "@opencode-ai/shared/util/error"
+import { NamedError } from "@opencode-ai/core/util/error"
 import { withTimeout } from "../util/timeout"
 import { Instance } from "../project/instance"
 import { Filesystem } from "../util"
-import { Effect, Semaphore } from "effect"
+import { Effect, Schema, Semaphore } from "effect"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
 
@@ -81,9 +81,9 @@ export namespace LSPClient {
   export const Event = {
     Diagnostics: BusEvent.define(
       "lsp.client.diagnostics",
-      z.object({
-        serverID: z.string(),
-        path: z.string(),
+      Schema.Struct({
+        serverID: Schema.String,
+        path: Schema.String,
       }),
     ),
   }
