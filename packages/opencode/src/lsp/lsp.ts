@@ -1,17 +1,17 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { Log } from "../util"
+import * as Log from "@opencode-ai/core/util/log"
 import { LSPClient } from "./client"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
-import { Config } from "../config"
+import { Config } from "../config/config"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Process } from "../util"
+import * as Process from "../util/process"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
-import { InstanceState } from "@/effect"
+import * as InstanceState from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Index from "./symbols"
 import { withStatics } from "@/util/schema"
@@ -156,7 +156,10 @@ export interface Interface {
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly openFile: (input: { path: string }) => Effect.Effect<void>
   readonly closeFile: (input: { path: string }) => Effect.Effect<void>
-  readonly touchFile: (input: string, waitForDiagnostics?: boolean | "full" | "incremental" | "document") => Effect.Effect<void>
+  readonly touchFile: (
+    input: string,
+    waitForDiagnostics?: boolean | "full" | "incremental" | "document",
+  ) => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
@@ -423,7 +426,10 @@ export const layer = Layer.effect(
       }
     })
 
-    const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, waitForDiagnostics?: boolean | "full" | "incremental" | "document") {
+    const touchFile = Effect.fn("LSP.touchFile")(function* (
+      input: string,
+      waitForDiagnostics?: boolean | "full" | "incremental" | "document",
+    ) {
       log.info("touching file", { file: input })
       const clients = yield* getClients(input)
       yield* Effect.promise(() =>
@@ -659,6 +665,7 @@ export const layer = Layer.effect(
 
 export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer))
 
+export * as LSP from "./lsp"
 export * as Diagnostic from "./diagnostic"
 export const Format = {
   pretty: Index.Index.pretty,

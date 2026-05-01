@@ -4,7 +4,7 @@ import { Plugin } from "@/plugin"
 import { Question } from "@/question"
 import { MessageV2 } from "./message-v2"
 import { PartID } from "./schema"
-import { Session } from "."
+import { Session } from "./session"
 
 export namespace LoopExit {
   interface Input {

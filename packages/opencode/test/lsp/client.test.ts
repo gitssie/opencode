@@ -5,7 +5,7 @@ import { tmpdir } from "../fixture/fixture"
 import { LSPClient } from "../../src/lsp"
 import { LSPServer } from "../../src/lsp"
 import { Instance } from "../../src/project/instance"
-import { Log } from "../../src/util"
+import * as Log from "@opencode-ai/core/util/log"
 
 function spawnFakeServer() {
   const { spawn } = require("child_process")

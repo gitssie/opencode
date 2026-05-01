@@ -7,15 +7,15 @@ import type {
   Diagnostic as VSCodeDiagnostic,
   DocumentSymbol as VSCodeDocumentSymbol,
 } from "vscode-languageserver-types"
-import { Log } from "../util"
-import { Process } from "../util"
+import * as Log from "@opencode-ai/core/util/log"
+import * as Process from "../util/process"
 import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
 import type { LSPServer } from "./server"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { withTimeout } from "../util/timeout"
 import { Instance } from "../project/instance"
-import { Filesystem } from "../util"
+import * as Filesystem from "../util/filesystem"
 import { Effect, Schema, Semaphore } from "effect"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
