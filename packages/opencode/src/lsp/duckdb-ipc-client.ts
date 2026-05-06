@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process"
 import crypto from "crypto"
 import path from "path"
 import { lstat, mkdir, readlink, rm, symlink, writeFile } from "fs/promises"
-import { Log } from "../util"
+import * as Log from "@opencode-ai/core/util/log"
 import { Global } from "@opencode-ai/core/global"
 import { Npm } from "@opencode-ai/core/npm"
 
