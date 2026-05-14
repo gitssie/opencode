@@ -105,7 +105,7 @@ const createLocalWorkspace = (input: { projectID: Project.Info["id"]; type: stri
   )
 
 const insertLegacyAssistantMessage = (sessionID: SessionIDType) =>
-  Effect.sync(() => {
+  Effect.promise(async () => {
     const message = new SessionMessage.Assistant({
       id: SessionMessage.ID.create(),
       type: "assistant",
@@ -118,7 +118,7 @@ const insertLegacyAssistantMessage = (sessionID: SessionIDType) =>
       time: { created: DateTime.makeUnsafe(1) },
       content: [],
     })
-    Database.use((db) =>
+    await Database.use((db) =>
       db
         .insert(SessionMessageTable)
         .values([
@@ -134,13 +134,12 @@ const insertLegacyAssistantMessage = (sessionID: SessionIDType) =>
               content: message.content,
             } as NonNullable<(typeof SessionMessageTable.$inferInsert)["data"]>,
           },
-        ])
-        .run(),
+        ]),
     )
   })
 
 const setLegacySummaryDiff = (sessionID: SessionIDType) =>
-  Effect.sync(() =>
+  Effect.promise(() =>
     Database.use((db) =>
       db
         .update(SessionTable)
@@ -150,25 +149,24 @@ const setLegacySummaryDiff = (sessionID: SessionIDType) =>
           summary_files: 1,
           summary_diffs: [{ additions: 1, deletions: 0 }],
         })
-        .where(eq(SessionTable.id, sessionID))
-        .run(),
+        .where(eq(SessionTable.id, sessionID)),
     ),
   )
 
 const getWorkspaceID = (sessionID: SessionIDType) =>
-  Effect.sync(() =>
+  Effect.promise(() =>
     Database.use((db) =>
       db
         .select({ workspaceID: SessionTable.workspace_id })
         .from(SessionTable)
         .where(eq(SessionTable.id, sessionID))
-        .get(),
+        .then((rows) => rows[0]),
     ),
   )
 
 const clearSessionPath = (sessionID: SessionIDType) =>
-  Effect.sync(() =>
-    Database.use((db) => db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sessionID)).run()),
+  Effect.promise(() =>
+    Database.use((db) => db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sessionID))),
   )
 
 function request(path: string, init?: RequestInit) {

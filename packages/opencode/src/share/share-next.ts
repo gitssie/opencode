@@ -76,8 +76,8 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ShareNext") {}
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T | Promise<T>) =>
+  Effect.promise(() => Database.use(fn))
 
 function api(resource: string): Api {
   return {
@@ -227,7 +227,7 @@ export const layer = Layer.effect(
 
     const get = Effect.fnUntraced(function* (sessionID: SessionID) {
       const row = yield* db((db) =>
-        db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).get(),
+        db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).then((rows) => rows[0]),
       )
       if (!row) return
       return { id: row.id, secret: row.secret, url: row.url } satisfies Share
@@ -321,8 +321,7 @@ export const layer = Layer.effect(
           .onConflictDoUpdate({
             target: SessionShareTable.session_id,
             set: { id: result.id, secret: result.secret, url: result.url },
-          })
-          .run(),
+          }),
       )
       const s = yield* InstanceState.get(state)
       s.shared.set(sessionID, result)
@@ -355,7 +354,7 @@ export const layer = Layer.effect(
         Effect.flatMap((r) => httpOk.execute(r)),
       )
 
-      yield* db((db) => db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run())
+      yield* db((db) => db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)))
       s.shared.delete(sessionID)
       s.queue.delete(sessionID)
     })

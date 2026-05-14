@@ -137,12 +137,12 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
-        const row = Database.use((db) =>
-          db.select().from(PermissionTable).where(eq(PermissionTable.project_id, ctx.project.id)).get(),
+        const row = yield* Effect.promise(() =>
+          Database.use((db) => db.select().from(PermissionTable).where(eq(PermissionTable.project_id, ctx.project.id))),
         )
         const state = {
           pending: new Map<PermissionID, PendingEntry>(),
-          approved: row?.data ?? [],
+          approved: row[0]?.data ?? [],
         }
 
         yield* Effect.addFinalizer(() =>

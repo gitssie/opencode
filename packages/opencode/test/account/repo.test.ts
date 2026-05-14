@@ -7,10 +7,10 @@ import { Database } from "@/storage/db"
 import { testEffect } from "../lib/effect"
 
 const truncate = Layer.effectDiscard(
-  Effect.sync(() => {
+  Effect.promise(async () => {
     const db = Database.Client()
-    db.run(/*sql*/ `DELETE FROM account_state`)
-    db.run(/*sql*/ `DELETE FROM account`)
+    await db.$client.query(/*sql*/ `DELETE FROM account_state`)
+    await db.$client.query(/*sql*/ `DELETE FROM account`)
   }),
 )
 

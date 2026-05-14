@@ -1,22 +1,13 @@
-import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
-import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
+import type { NodePgDatabase, NodePgTransaction } from "drizzle-orm/node-postgres"
 export * from "drizzle-orm"
 import { LocalContext } from "@/util/local-context"
 import { lazy } from "../util/lazy"
-import { Global } from "@opencode-ai/core/global"
 import * as Log from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
-import path from "path"
-import { readFileSync, readdirSync, existsSync } from "fs"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { InstallationChannel } from "@opencode-ai/core/installation/version"
 import { InstanceState } from "@/effect/instance-state"
-import { iife } from "@/util/iife"
 import { init } from "#db"
 import { Schema } from "effect"
-
-declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number; name: string }[] | undefined
 
 export const NotFoundError = NamedError.create("NotFoundError", {
   message: Schema.String,
@@ -24,103 +15,23 @@ export const NotFoundError = NamedError.create("NotFoundError", {
 
 const log = Log.create({ service: "db" })
 
-export function getChannelPath() {
-  if (["latest", "beta", "prod"].includes(InstallationChannel) || Flag.OPENCODE_DISABLE_CHANNEL_DB)
-    return path.join(Global.Path.data, "opencode.db")
-  const safe = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
-  return path.join(Global.Path.data, `opencode-${safe}.db`)
-}
+export const Path = (() => {
+  if (Flag.OPENCODE_DB) return Flag.OPENCODE_DB
+  return process.env.OPENCODE_DB_URL ?? "postgres://localhost/opencode"
+})()
 
-export const Path = iife(() => {
-  if (Flag.OPENCODE_DB) {
-    if (Flag.OPENCODE_DB === ":memory:" || path.isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
-    return path.join(Global.Path.data, Flag.OPENCODE_DB)
-  }
-  return getChannelPath()
-})
+export type Transaction = NodePgTransaction<Record<string, never>, any, any>
 
-export type Transaction = SQLiteTransaction<"sync", void>
-
-type Client = SQLiteBunDatabase
-
-type Journal = { sql: string; timestamp: number; name: string }[]
-
-// Drizzle's migrate overloads trigger expensive variance checks here; narrow to the journal overload we actually use.
-const migrateFromJournal = migrate as unknown as (db: SQLiteBunDatabase, entries: Journal) => void
-
-function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
-  migrateFromJournal(db, entries)
-}
-
-function time(tag: string) {
-  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(tag)
-  if (!match) return 0
-  return Date.UTC(
-    Number(match[1]),
-    Number(match[2]) - 1,
-    Number(match[3]),
-    Number(match[4]),
-    Number(match[5]),
-    Number(match[6]),
-  )
-}
-
-function migrations(dir: string): Journal {
-  const dirs = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-
-  const sql = dirs
-    .map((name) => {
-      const file = path.join(dir, name, "migration.sql")
-      if (!existsSync(file)) return
-      return {
-        sql: readFileSync(file, "utf-8"),
-        timestamp: time(name),
-        name,
-      }
-    })
-    .filter(Boolean) as Journal
-
-  return sql.sort((a, b) => a.timestamp - b.timestamp)
-}
+type Client = NodePgDatabase
 
 export const Client = lazy(() => {
-  log.info("opening database", { path: Path })
-
-  const db = init(Path)
-
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA synchronous = NORMAL")
-  db.run("PRAGMA busy_timeout = 5000")
-  db.run("PRAGMA cache_size = -64000")
-  db.run("PRAGMA foreign_keys = ON")
-  db.run("PRAGMA wal_checkpoint(PASSIVE)")
-
-  // Apply schema migrations
-  const entries =
-    typeof OPENCODE_MIGRATIONS !== "undefined"
-      ? OPENCODE_MIGRATIONS
-      : migrations(path.join(import.meta.dirname, "../../migration"))
-  if (entries.length > 0) {
-    log.info("applying migrations", {
-      count: entries.length,
-      mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
-    })
-    if (Flag.OPENCODE_SKIP_MIGRATIONS) {
-      for (const item of entries) {
-        item.sql = "select 1;"
-      }
-    }
-    applyMigrations(db, entries)
-  }
-
-  return db
+  log.info("opening database", { url: Path })
+  return init(Path)
 })
 
-export function close() {
+export async function close() {
   if (!Client.loaded()) return
-  Client().$client.close()
+  await (Client() as any).$client?.end?.()
   Client.reset()
 }
 
@@ -131,17 +42,19 @@ const ctx = LocalContext.create<{
   effects: (() => void | Promise<void>)[]
 }>("database")
 
-export function use<T>(callback: (trx: TxOrDb) => T): T {
+export function use<T>(callback: (trx: TxOrDb) => T | Promise<T>): Promise<T> {
   try {
-    return callback(ctx.use().tx)
+    return Promise.resolve(callback(ctx.use().tx))
   } catch (err) {
     if (err instanceof LocalContext.NotFound) {
       const effects: (() => void | Promise<void>)[] = []
-      const result = ctx.provide({ effects, tx: Client() }, () => callback(Client()))
-      for (const effect of effects) effect()
-      return result
+      const result = ctx.provide({ effects, tx: Client() }, () => Promise.resolve(callback(Client())))
+      return result.then((v) => {
+        for (const effect of effects) effect()
+        return v
+      })
     }
-    throw err
+    return Promise.reject(err)
   }
 }
 
@@ -154,25 +67,28 @@ export function effect(fn: () => any | Promise<any>) {
   }
 }
 
-type NotPromise<T> = T extends Promise<any> ? never : T
-
 export function transaction<T>(
-  callback: (tx: TxOrDb) => NotPromise<T>,
-  options?: {
+  callback: (tx: TxOrDb) => T | Promise<T>,
+  // PostgreSQL does not use SQLite-style behavior flags; the parameter is
+  // kept for call-site compatibility but ignored.
+  _options?: {
     behavior?: "deferred" | "immediate" | "exclusive"
   },
-): NotPromise<T> {
+): Promise<T> {
   try {
-    return callback(ctx.use().tx)
+    return Promise.resolve(callback(ctx.use().tx))
   } catch (err) {
     if (err instanceof LocalContext.NotFound) {
       const effects: (() => void | Promise<void>)[] = []
-      const txCallback = InstanceState.bind((tx: TxOrDb) => ctx.provide({ tx, effects }, () => callback(tx)))
-      const result = Client().transaction(txCallback, { behavior: options?.behavior })
-      for (const effect of effects) effect()
-      return result as NotPromise<T>
+      const txCallback = InstanceState.bind((tx: TxOrDb) =>
+        ctx.provide({ tx, effects }, () => Promise.resolve(callback(tx))),
+      )
+      return (Client() as NodePgDatabase).transaction(txCallback).then((result) => {
+        for (const effect of effects) effect()
+        return result
+      })
     }
-    throw err
+    return Promise.reject(err)
   }
 }
 

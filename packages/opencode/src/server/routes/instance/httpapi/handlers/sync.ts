@@ -78,17 +78,18 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
 
     const history = Effect.fn("SyncHttpApi.history")(function* (ctx: { payload: typeof HistoryPayload.Type }) {
       const exclude = Object.entries(ctx.payload)
-      return Database.use((db) =>
-        db
-          .select()
-          .from(EventTable)
-          .where(
-            exclude.length > 0
-              ? not(or(...exclude.map(([id, seq]) => and(eq(EventTable.aggregate_id, id), lte(EventTable.seq, seq))))!)
-              : undefined,
-          )
-          .orderBy(asc(EventTable.seq))
-          .all(),
+      return yield* Effect.promise(() =>
+        Database.use((db) =>
+          db
+            .select()
+            .from(EventTable)
+            .where(
+              exclude.length > 0
+                ? not(or(...exclude.map(([id, seq]) => and(eq(EventTable.aggregate_id, id), lte(EventTable.seq, seq))))!)
+                : undefined,
+            )
+            .orderBy(asc(EventTable.seq)),
+        ),
       )
     })
 

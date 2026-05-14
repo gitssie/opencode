@@ -24,7 +24,7 @@ function legacySessionID() {
 
 function seed(opts: { id: SessionID; dir: string; project: ProjectID }) {
   const now = Date.now()
-  Database.use((db) =>
+  void Database.use((db) =>
     db
       .insert(SessionTable)
       .values({
@@ -36,13 +36,12 @@ function seed(opts: { id: SessionID; dir: string; project: ProjectID }) {
         version: "0.0.0-test",
         time_created: now,
         time_updated: now,
-      })
-      .run(),
+      }),
   )
 }
 
 function ensureGlobal() {
-  Database.use((db) =>
+  void Database.use((db) =>
     db
       .insert(ProjectTable)
       .values({
@@ -52,8 +51,7 @@ function ensureGlobal() {
         time_updated: Date.now(),
         sandboxes: [],
       })
-      .onConflictDoNothing()
-      .run(),
+      .onConflictDoNothing(),
   )
 }
 
@@ -81,7 +79,9 @@ describe("migrateFromGlobal", () => {
       expect(real.id).not.toBe(ProjectID.global)
 
       // 4. The session should have been migrated to the real project ID
-      const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+      const row = yield* Effect.promise(() =>
+        Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).then((rows) => rows[0])),
+      )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(real.id)
     }),
@@ -108,7 +108,9 @@ describe("migrateFromGlobal", () => {
       //    so the current code skips migration entirely. This is the bug.
       yield* projects.fromDirectory(tmp)
 
-      const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+      const row = yield* Effect.promise(() =>
+        Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).then((rows) => rows[0])),
+      )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(project.id)
     }),
@@ -130,7 +132,9 @@ describe("migrateFromGlobal", () => {
 
       yield* projects.fromDirectory(tmp)
 
-      const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+      const row = yield* Effect.promise(() =>
+        Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).then((rows) => rows[0])),
+      )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(ProjectID.global)
     }),
@@ -150,7 +154,9 @@ describe("migrateFromGlobal", () => {
       yield* Effect.sync(() => seed({ id, dir: "/some/other/dir", project: ProjectID.global }))
 
       yield* projects.fromDirectory(tmp)
-      const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+      const row = yield* Effect.promise(() =>
+        Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).then((rows) => rows[0])),
+      )
       expect(row).toBeDefined()
       // Should remain under "global" — not stolen
       expect(row!.project_id).toBe(ProjectID.global)

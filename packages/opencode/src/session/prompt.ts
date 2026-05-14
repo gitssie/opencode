@@ -1069,14 +1069,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     })
 
     const currentModel = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const current = Database.use((db) =>
-        db.select({ model: SessionTable.model }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
+      const current = yield* Effect.promise(() =>
+        Database.use((db) => db.select({ model: SessionTable.model }).from(SessionTable).where(eq(SessionTable.id, sessionID))),
       )
-      if (current?.model) {
+      if (current[0]?.model) {
         return {
-          providerID: ProviderID.make(current.model.providerID),
-          modelID: ModelID.make(current.model.id),
-          ...(current.model.variant && current.model.variant !== "default" ? { variant: current.model.variant } : {}),
+          providerID: ProviderID.make(current[0].model.providerID),
+          modelID: ModelID.make(current[0].model.id),
+          ...(current[0].model.variant && current[0].model.variant !== "default"
+            ? { variant: current[0].model.variant }
+            : {}),
         }
       }
       const match = yield* sessions
@@ -1097,13 +1099,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         throw error
       }
 
-      const current = Database.use((db) =>
-        db
-          .select({ agent: SessionTable.agent, model: SessionTable.model })
-          .from(SessionTable)
-          .where(eq(SessionTable.id, input.sessionID))
-          .get(),
+      const current = yield* Effect.promise(() =>
+        Database.use((db) =>
+          db.select({ agent: SessionTable.agent, model: SessionTable.model }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)),
+        ),
       )
+      const existing = current[0]
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const full =
@@ -1128,7 +1129,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         format: input.format,
       }
 
-      if (current?.agent !== info.agent) {
+      if (existing?.agent !== info.agent) {
         yield* sync.run(SessionEvent.AgentSwitched.Sync, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
@@ -1136,9 +1137,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         })
       }
       if (
-        current?.model?.providerID !== info.model.providerID ||
-        current.model.id !== info.model.modelID ||
-        (current.model.variant === "default" ? undefined : current.model.variant) !== info.model.variant
+        existing?.model?.providerID !== info.model.providerID ||
+        existing?.model?.id !== info.model.modelID ||
+        (existing?.model?.variant === "default" ? undefined : existing?.model?.variant) !== info.model.variant
       ) {
         yield* sync.run(SessionEvent.ModelSwitched.Sync, {
           sessionID: input.sessionID,

@@ -1,8 +1,8 @@
-import { DatabaseSync } from "node:sqlite"
-import { drizzle } from "drizzle-orm/node-sqlite"
+import { Pool } from "pg"
+import { drizzle } from "drizzle-orm/node-postgres"
 
-export function init(path: string) {
-  const sqlite = new DatabaseSync(path)
-  const db = drizzle({ client: sqlite })
+export function init(connectionString: string) {
+  const pool = new Pool({ connectionString })
+  const db = drizzle({ client: pool })
   return db
 }

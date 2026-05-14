@@ -43,7 +43,7 @@ export type Properties<Def extends Definition = Definition> = EffectSchema.Schem
 
 export type SerializedEvent<Def extends Definition = Definition> = Event<Def> & { type: string }
 
-type ProjectorFunc = (db: Database.TxOrDb, data: unknown, event: Event) => void
+type ProjectorFunc = (db: Database.TxOrDb, data: unknown, event: Event) => void | Promise<void>
 type ConvertEvent = (type: string, data: Event["data"]) => unknown | Promise<unknown>
 type PublishContext = {
   instance?: InstanceContext
@@ -77,12 +77,14 @@ export const layer = Layer.effect(Service)(
         throw new Error(`Unknown event type: ${event.type}`)
       }
 
-      const row = Database.use((db) =>
-        db
-          .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
-          .from(EventSequenceTable)
-          .where(eq(EventSequenceTable.aggregate_id, event.aggregateID))
-          .get(),
+      const row = yield* Effect.promise(() =>
+        Database.use((db) =>
+          db
+            .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, event.aggregateID))
+            .then((rows) => rows[0]),
+        ),
       )
 
       const latest = row?.seq ?? -1
@@ -106,12 +108,14 @@ export const layer = Layer.effect(Service)(
             workspace: yield* InstanceState.workspaceID,
           }
         : undefined
-      process(def, event, {
-        publish,
-        context,
-        ownerID: options?.ownerID,
-        experimentalWorkspaces: flags.experimentalWorkspaces,
-      })
+      yield* Effect.promise(() =>
+        process(def, event, {
+          publish,
+          context,
+          ownerID: options?.ownerID,
+          experimentalWorkspaces: flags.experimentalWorkspaces,
+        }),
+      )
     })
 
     const replayAll: Interface["replayAll"] = Effect.fn("SyncEvent.replayAll")(function* (events, options) {
@@ -153,43 +157,41 @@ export const layer = Layer.effect(Service)(
           }
         : undefined
 
-      // Note that this is an "immediate" transaction which is critical.
-      // We need to make sure we can safely read and write with nothing
-      // else changing the data from under us
-      Database.transaction(
-        (tx) => {
+      // Use a regular transaction; PostgreSQL does not have SQLite-style
+      // deferred/immediate/exclusive locking. Sequence integrity is enforced
+      // by the unique primary key on EventSequenceTable and the seq check above.
+      yield* Effect.promise(() =>
+        Database.transaction(async (tx) => {
           const id = EventID.ascending()
-          const row = tx
+          const rows = await tx
             .select({ seq: EventSequenceTable.seq })
             .from(EventSequenceTable)
             .where(eq(EventSequenceTable.aggregate_id, agg))
-            .get()
+          const row = rows[0]
           const seq = row?.seq != null ? row.seq + 1 : 0
 
           const event = { id, seq, aggregateID: agg, data }
-          process(def, event, { publish, context, experimentalWorkspaces: flags.experimentalWorkspaces })
-        },
-        {
-          behavior: "immediate",
-        },
+          await process(def, event, { publish, context, experimentalWorkspaces: flags.experimentalWorkspaces })
+        }),
       )
     })
 
     const remove: Interface["remove"] = Effect.fn("SyncEvent.remove")(function* (aggregateID) {
-      Database.transaction((tx) => {
-        tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).run()
-        tx.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).run()
-      })
+      yield* Effect.promise(() =>
+        Database.transaction(async (tx) => {
+          await tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID))
+          await tx.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID))
+        }),
+      )
     })
 
     const claim: Interface["claim"] = Effect.fn("SyncEvent.claim")((aggregateID, ownerID) =>
-      Effect.sync(() =>
+      Effect.promise(() =>
         Database.use((db) =>
           db
             .update(EventSequenceTable)
             .set({ owner_id: ownerID })
-            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-            .run(),
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID)),
         ),
       ),
     )
@@ -278,12 +280,12 @@ export function define<
 
 export function project<Def extends Definition>(
   def: Def,
-  func: (db: Database.TxOrDb, data: Event<Def>["data"], event: Event<Def>) => void,
+  func: (db: Database.TxOrDb, data: Event<Def>["data"], event: Event<Def>) => void | Promise<void>,
 ): [Definition, ProjectorFunc] {
   return [def, func as ProjectorFunc]
 }
 
-function process<Def extends Definition>(
+async function process<Def extends Definition>(
   def: Def,
   event: Event<Def>,
   options: { publish: boolean; context?: PublishContext; ownerID?: string; experimentalWorkspaces: boolean },
@@ -297,11 +299,12 @@ function process<Def extends Definition>(
     throw new Error(`Projector not found for event: ${def.type}`)
   }
 
-  Database.transaction((tx) => {
-    projector(tx, event.data, event)
+  await Database.transaction(async (tx) => {
+    await projector(tx, event.data, event)
 
     if (options.experimentalWorkspaces) {
-      tx.insert(EventSequenceTable)
+      await tx
+        .insert(EventSequenceTable)
         .values({
           aggregate_id: event.aggregateID,
           seq: event.seq,
@@ -311,16 +314,13 @@ function process<Def extends Definition>(
           target: EventSequenceTable.aggregate_id,
           set: { seq: event.seq },
         })
-        .run()
-      tx.insert(EventTable)
-        .values({
-          id: event.id,
-          seq: event.seq,
-          aggregate_id: event.aggregateID,
-          type: versionedType(def.type, def.version),
-          data: event.data as Record<string, unknown>,
-        })
-        .run()
+      await tx.insert(EventTable).values({
+        id: event.id,
+        seq: event.seq,
+        aggregate_id: event.aggregateID,
+        type: versionedType(def.type, def.version),
+        data: event.data as Record<string, unknown>,
+      })
     }
 
     Database.effect(() => {

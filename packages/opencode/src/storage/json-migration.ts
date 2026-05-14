@@ -1,5 +1,4 @@
-import type { SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import type { NodeSQLiteDatabase } from "drizzle-orm/node-sqlite"
+import type { NodePgDatabase } from "drizzle-orm/node-postgres"
 import { Global } from "@opencode-ai/core/global"
 import * as Log from "@opencode-ai/core/util/log"
 import { ProjectTable } from "../project/project.sql"
@@ -22,7 +21,7 @@ type Options = {
   progress?: (event: Progress) => void
 }
 
-export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<any, any>, options?: Options) {
+export async function run(db: NodePgDatabase<any>, options?: Options) {
   const storageDir = path.join(Global.Path.data, "storage")
 
   if (!existsSync(storageDir)) {
@@ -39,16 +38,9 @@ export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<a
     }
   }
 
-  log.info("starting json to sqlite migration", { storageDir })
+  log.info("starting json to postgresql migration", { storageDir })
   const start = performance.now()
 
-  // const db = drizzle({ client: sqlite })
-
-  // Optimize SQLite for bulk inserts
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA synchronous = OFF")
-  db.run("PRAGMA cache_size = 10000")
-  db.run("PRAGMA temp_store = MEMORY")
   const stats = {
     projects: 0,
     sessions: 0,
@@ -67,7 +59,7 @@ export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<a
   }
   const errs = stats.errors
 
-  const batchSize = 1000
+  const batchSize = 500
   const now = Date.now()
 
   async function list(pattern: string) {
@@ -95,10 +87,10 @@ export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<a
     return items
   }
 
-  function insert(values: unknown[], table: Parameters<typeof db.insert>[0], label: string) {
+  async function insert(values: unknown[], table: Parameters<typeof db.insert>[0], label: string) {
     if (values.length === 0) return 0
     try {
-      db.insert(table).values(values).onConflictDoNothing().run()
+      await db.insert(table).values(values).onConflictDoNothing()
       return values.length
     } catch (e) {
       errs.push(`failed to migrate ${label} batch: ${e}`)
@@ -147,287 +139,266 @@ export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<a
 
   progress?.({ current, total, label: "starting" })
 
-  db.run("BEGIN TRANSACTION")
-
-  // Migrate projects first (no FK deps)
-  // Derive all IDs from file paths, not JSON content
-  const projectIds = new Set<string>()
-  const projectValues: unknown[] = []
-  for (let i = 0; i < projectFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, projectFiles.length)
-    const batch = await read(projectFiles, i, end)
-    projectValues.length = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const id = path.basename(projectFiles[i + j], ".json")
-      projectIds.add(id)
-      projectValues.push({
-        id,
-        worktree: data.worktree ?? "/",
-        vcs: data.vcs,
-        name: data.name ?? undefined,
-        icon_url: data.icon?.url,
-        icon_url_override: data.icon?.override,
-        icon_color: data.icon?.color,
-        time_created: data.time?.created ?? now,
-        time_updated: data.time?.updated ?? now,
-        time_initialized: data.time?.initialized,
-        sandboxes: data.sandboxes ?? [],
-        commands: data.commands,
-      })
-    }
-    stats.projects += insert(projectValues, ProjectTable, "project")
-    step("projects", end - i)
-  }
-  log.info("migrated projects", { count: stats.projects, duration: Math.round(performance.now() - start) })
-
-  // Migrate sessions (depends on projects)
-  // Derive all IDs from directory/file paths, not JSON content, since earlier
-  // migrations may have moved sessions to new directories without updating the JSON
-  const sessionProjects = sessionFiles.map((file) => path.basename(path.dirname(file)))
-  const sessionIds = new Set<string>()
-  const sessionValues: unknown[] = []
-  for (let i = 0; i < sessionFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, sessionFiles.length)
-    const batch = await read(sessionFiles, i, end)
-    sessionValues.length = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const id = path.basename(sessionFiles[i + j], ".json")
-      const projectID = sessionProjects[i + j]
-      if (!projectIds.has(projectID)) {
-        orphans.sessions++
-        continue
-      }
-      sessionIds.add(id)
-      sessionValues.push({
-        id,
-        project_id: projectID,
-        parent_id: data.parentID ?? null,
-        slug: data.slug ?? "",
-        directory: data.directory ?? "",
-        path: data.path ?? null,
-        title: data.title ?? "",
-        version: data.version ?? "",
-        share_url: data.share?.url ?? null,
-        summary_additions: data.summary?.additions ?? null,
-        summary_deletions: data.summary?.deletions ?? null,
-        summary_files: data.summary?.files ?? null,
-        summary_diffs: data.summary?.diffs ?? null,
-        cost: 0,
-        tokens_input: 0,
-        tokens_output: 0,
-        tokens_reasoning: 0,
-        tokens_cache_read: 0,
-        tokens_cache_write: 0,
-        revert: data.revert ?? null,
-        permission: data.permission ?? null,
-        time_created: data.time?.created ?? now,
-        time_updated: data.time?.updated ?? now,
-        time_compacting: data.time?.compacting ?? null,
-        time_archived: data.time?.archived ?? null,
-      })
-    }
-    stats.sessions += insert(sessionValues, SessionTable, "session")
-    step("sessions", end - i)
-  }
-  log.info("migrated sessions", { count: stats.sessions })
-  if (orphans.sessions > 0) {
-    log.warn("skipped orphaned sessions", { count: orphans.sessions })
-  }
-
-  // Migrate messages using pre-scanned file map
-  const allMessageFiles = [] as string[]
-  const allMessageSessions = [] as string[]
-  const messageSessions = new Map<string, string>()
-  for (const file of messageFiles) {
-    const sessionID = path.basename(path.dirname(file))
-    if (!sessionIds.has(sessionID)) continue
-    allMessageFiles.push(file)
-    allMessageSessions.push(sessionID)
-  }
-
-  for (let i = 0; i < allMessageFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, allMessageFiles.length)
-    const batch = await read(allMessageFiles, i, end)
-    // oxlint-disable-next-line unicorn/no-new-array -- pre-allocated for index-based batch fill
-    const values = new Array(batch.length)
-    let count = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const file = allMessageFiles[i + j]
-      const id = path.basename(file, ".json")
-      const sessionID = allMessageSessions[i + j]
-      messageSessions.set(id, sessionID)
-      const rest = data
-      delete rest.id
-      delete rest.sessionID
-      values[count++] = {
-        id,
-        session_id: sessionID,
-        time_created: data.time?.created ?? now,
-        time_updated: data.time?.updated ?? now,
-        data: rest,
-      }
-    }
-    values.length = count
-    stats.messages += insert(values, MessageTable, "message")
-    step("messages", end - i)
-  }
-  log.info("migrated messages", { count: stats.messages })
-
-  // Migrate parts using pre-scanned file map
-  for (let i = 0; i < partFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, partFiles.length)
-    const batch = await read(partFiles, i, end)
-    // oxlint-disable-next-line unicorn/no-new-array -- pre-allocated for index-based batch fill
-    const values = new Array(batch.length)
-    let count = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const file = partFiles[i + j]
-      const id = path.basename(file, ".json")
-      const messageID = path.basename(path.dirname(file))
-      const sessionID = messageSessions.get(messageID)
-      if (!sessionID) {
-        errs.push(`part missing message session: ${file}`)
-        continue
-      }
-      if (!sessionIds.has(sessionID)) continue
-      const rest = data
-      delete rest.id
-      delete rest.messageID
-      delete rest.sessionID
-      values[count++] = {
-        id,
-        message_id: messageID,
-        session_id: sessionID,
-        time_created: data.time?.created ?? now,
-        time_updated: data.time?.updated ?? now,
-        data: rest,
-      }
-    }
-    values.length = count
-    stats.parts += insert(values, PartTable, "part")
-    step("parts", end - i)
-  }
-  log.info("migrated parts", { count: stats.parts })
-
-  // Migrate todos
-  const todoSessions = todoFiles.map((file) => path.basename(file, ".json"))
-  for (let i = 0; i < todoFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, todoFiles.length)
-    const batch = await read(todoFiles, i, end)
-    const values: unknown[] = []
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const sessionID = todoSessions[i + j]
-      if (!sessionIds.has(sessionID)) {
-        orphans.todos++
-        continue
-      }
-      if (!Array.isArray(data)) {
-        errs.push(`todo not an array: ${todoFiles[i + j]}`)
-        continue
-      }
-      for (let position = 0; position < data.length; position++) {
-        const todo = data[position]
-        if (!todo?.content || !todo?.status || !todo?.priority) continue
-        values.push({
-          session_id: sessionID,
-          content: todo.content,
-          status: todo.status,
-          priority: todo.priority,
-          position,
-          time_created: now,
-          time_updated: now,
+  await db.transaction(async (tx) => {
+    // Migrate projects first (no FK deps)
+    const projectIds = new Set<string>()
+    const projectValues: unknown[] = []
+    for (let i = 0; i < projectFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, projectFiles.length)
+      const batch = await read(projectFiles, i, end)
+      projectValues.length = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const id = path.basename(projectFiles[i + j], ".json")
+        projectIds.add(id)
+        projectValues.push({
+          id,
+          worktree: data.worktree ?? "/",
+          vcs: data.vcs,
+          name: data.name ?? undefined,
+          icon_url: data.icon?.url,
+          icon_url_override: data.icon?.override,
+          icon_color: data.icon?.color,
+          time_created: data.time?.created ?? now,
+          time_updated: data.time?.updated ?? now,
+          time_initialized: data.time?.initialized,
+          sandboxes: data.sandboxes ?? [],
+          commands: data.commands,
         })
       }
+      stats.projects += await insert(projectValues, ProjectTable, "project")
+      step("projects", end - i)
     }
-    stats.todos += insert(values, TodoTable, "todo")
-    step("todos", end - i)
-  }
-  log.info("migrated todos", { count: stats.todos })
-  if (orphans.todos > 0) {
-    log.warn("skipped orphaned todos", { count: orphans.todos })
-  }
+    log.info("migrated projects", { count: stats.projects, duration: Math.round(performance.now() - start) })
 
-  // Migrate permissions
-  const permProjects = permFiles.map((file) => path.basename(file, ".json"))
-  const permValues: unknown[] = []
-  for (let i = 0; i < permFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, permFiles.length)
-    const batch = await read(permFiles, i, end)
-    permValues.length = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const projectID = permProjects[i + j]
-      if (!projectIds.has(projectID)) {
-        orphans.permissions++
-        continue
+    // Migrate sessions (depends on projects)
+    const sessionProjects = sessionFiles.map((file) => path.basename(path.dirname(file)))
+    const sessionIds = new Set<string>()
+    const sessionValues: unknown[] = []
+    for (let i = 0; i < sessionFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, sessionFiles.length)
+      const batch = await read(sessionFiles, i, end)
+      sessionValues.length = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const id = path.basename(sessionFiles[i + j], ".json")
+        const projectID = sessionProjects[i + j]
+        if (!projectIds.has(projectID)) {
+          orphans.sessions++
+          continue
+        }
+        sessionIds.add(id)
+        sessionValues.push({
+          id,
+          project_id: projectID,
+          parent_id: data.parentID ?? null,
+          slug: data.slug ?? "",
+          directory: data.directory ?? "",
+          path: data.path ?? null,
+          title: data.title ?? "",
+          version: data.version ?? "",
+          share_url: data.share?.url ?? null,
+          summary_additions: data.summary?.additions ?? null,
+          summary_deletions: data.summary?.deletions ?? null,
+          summary_files: data.summary?.files ?? null,
+          summary_diffs: data.summary?.diffs ?? null,
+          cost: 0,
+          tokens_input: 0,
+          tokens_output: 0,
+          tokens_reasoning: 0,
+          tokens_cache_read: 0,
+          tokens_cache_write: 0,
+          revert: data.revert ?? null,
+          permission: data.permission ?? null,
+          time_created: data.time?.created ?? now,
+          time_updated: data.time?.updated ?? now,
+          time_compacting: data.time?.compacting ?? null,
+          time_archived: data.time?.archived ?? null,
+        })
       }
-      permValues.push({ project_id: projectID, data })
+      stats.sessions += await insert(sessionValues, SessionTable, "session")
+      step("sessions", end - i)
     }
-    stats.permissions += insert(permValues, PermissionTable, "permission")
-    step("permissions", end - i)
-  }
-  log.info("migrated permissions", { count: stats.permissions })
-  if (orphans.permissions > 0) {
-    log.warn("skipped orphaned permissions", { count: orphans.permissions })
-  }
+    log.info("migrated sessions", { count: stats.sessions })
+    if (orphans.sessions > 0) log.warn("skipped orphaned sessions", { count: orphans.sessions })
 
-  // Migrate session shares
-  const shareSessions = shareFiles.map((file) => path.basename(file, ".json"))
-  const shareValues: unknown[] = []
-  for (let i = 0; i < shareFiles.length; i += batchSize) {
-    const end = Math.min(i + batchSize, shareFiles.length)
-    const batch = await read(shareFiles, i, end)
-    shareValues.length = 0
-    for (let j = 0; j < batch.length; j++) {
-      const data = batch[j]
-      if (!data) continue
-      const sessionID = shareSessions[i + j]
-      if (!sessionIds.has(sessionID)) {
-        orphans.shares++
-        continue
-      }
-      if (!data?.id || !data?.secret || !data?.url) {
-        errs.push(`session_share missing id/secret/url: ${shareFiles[i + j]}`)
-        continue
-      }
-      shareValues.push({ session_id: sessionID, id: data.id, secret: data.secret, url: data.url })
+    // Migrate messages
+    const allMessageFiles: string[] = []
+    const allMessageSessions: string[] = []
+    const messageSessions = new Map<string, string>()
+    for (const file of messageFiles) {
+      const sessionID = path.basename(path.dirname(file))
+      if (!sessionIds.has(sessionID)) continue
+      allMessageFiles.push(file)
+      allMessageSessions.push(sessionID)
     }
-    stats.shares += insert(shareValues, SessionShareTable, "session_share")
-    step("shares", end - i)
-  }
-  log.info("migrated session shares", { count: stats.shares })
-  if (orphans.shares > 0) {
-    log.warn("skipped orphaned session shares", { count: orphans.shares })
-  }
 
-  db.run("COMMIT")
+    for (let i = 0; i < allMessageFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, allMessageFiles.length)
+      const batch = await read(allMessageFiles, i, end)
+      // oxlint-disable-next-line unicorn/no-new-array -- pre-allocated for index-based batch fill
+      const values = new Array(batch.length)
+      let count = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const file = allMessageFiles[i + j]
+        const id = path.basename(file, ".json")
+        const sessionID = allMessageSessions[i + j]
+        messageSessions.set(id, sessionID)
+        const rest = data
+        delete rest.id
+        delete rest.sessionID
+        values[count++] = {
+          id,
+          session_id: sessionID,
+          time_created: data.time?.created ?? now,
+          time_updated: data.time?.updated ?? now,
+          data: rest,
+        }
+      }
+      values.length = count
+      stats.messages += await insert(values, MessageTable, "message")
+      step("messages", end - i)
+    }
+    log.info("migrated messages", { count: stats.messages })
+
+    // Migrate parts
+    for (let i = 0; i < partFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, partFiles.length)
+      const batch = await read(partFiles, i, end)
+      // oxlint-disable-next-line unicorn/no-new-array -- pre-allocated for index-based batch fill
+      const values = new Array(batch.length)
+      let count = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const file = partFiles[i + j]
+        const id = path.basename(file, ".json")
+        const messageID = path.basename(path.dirname(file))
+        const sessionID = messageSessions.get(messageID)
+        if (!sessionID) {
+          errs.push(`part missing message session: ${file}`)
+          continue
+        }
+        if (!sessionIds.has(sessionID)) continue
+        const rest = data
+        delete rest.id
+        delete rest.messageID
+        delete rest.sessionID
+        values[count++] = {
+          id,
+          message_id: messageID,
+          session_id: sessionID,
+          time_created: data.time?.created ?? now,
+          time_updated: data.time?.updated ?? now,
+          data: rest,
+        }
+      }
+      values.length = count
+      stats.parts += await insert(values, PartTable, "part")
+      step("parts", end - i)
+    }
+    log.info("migrated parts", { count: stats.parts })
+
+    // Migrate todos
+    const todoSessions = todoFiles.map((file) => path.basename(file, ".json"))
+    for (let i = 0; i < todoFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, todoFiles.length)
+      const batch = await read(todoFiles, i, end)
+      const values: unknown[] = []
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const sessionID = todoSessions[i + j]
+        if (!sessionIds.has(sessionID)) {
+          orphans.todos++
+          continue
+        }
+        if (!Array.isArray(data)) {
+          errs.push(`todo not an array: ${todoFiles[i + j]}`)
+          continue
+        }
+        for (let position = 0; position < data.length; position++) {
+          const todo = data[position]
+          if (!todo?.content || !todo?.status || !todo?.priority) continue
+          values.push({
+            session_id: sessionID,
+            content: todo.content,
+            status: todo.status,
+            priority: todo.priority,
+            position,
+            time_created: now,
+            time_updated: now,
+          })
+        }
+      }
+      stats.todos += await insert(values, TodoTable, "todo")
+      step("todos", end - i)
+    }
+    log.info("migrated todos", { count: stats.todos })
+    if (orphans.todos > 0) log.warn("skipped orphaned todos", { count: orphans.todos })
+
+    // Migrate permissions
+    const permProjects = permFiles.map((file) => path.basename(file, ".json"))
+    const permValues: unknown[] = []
+    for (let i = 0; i < permFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, permFiles.length)
+      const batch = await read(permFiles, i, end)
+      permValues.length = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const projectID = permProjects[i + j]
+        if (!projectIds.has(projectID)) {
+          orphans.permissions++
+          continue
+        }
+        permValues.push({ project_id: projectID, data })
+      }
+      stats.permissions += await insert(permValues, PermissionTable, "permission")
+      step("permissions", end - i)
+    }
+    log.info("migrated permissions", { count: stats.permissions })
+    if (orphans.permissions > 0) log.warn("skipped orphaned permissions", { count: orphans.permissions })
+
+    // Migrate session shares
+    const shareSessions = shareFiles.map((file) => path.basename(file, ".json"))
+    const shareValues: unknown[] = []
+    for (let i = 0; i < shareFiles.length; i += batchSize) {
+      const end = Math.min(i + batchSize, shareFiles.length)
+      const batch = await read(shareFiles, i, end)
+      shareValues.length = 0
+      for (let j = 0; j < batch.length; j++) {
+        const data = batch[j]
+        if (!data) continue
+        const sessionID = shareSessions[i + j]
+        if (!sessionIds.has(sessionID)) {
+          orphans.shares++
+          continue
+        }
+        if (!data?.id || !data?.secret || !data?.url) {
+          errs.push(`session_share missing id/secret/url: ${shareFiles[i + j]}`)
+          continue
+        }
+        shareValues.push({ session_id: sessionID, id: data.id, secret: data.secret, url: data.url })
+      }
+      stats.shares += await insert(shareValues, SessionShareTable, "session_share")
+      step("shares", end - i)
+    }
+    log.info("migrated session shares", { count: stats.shares })
+    if (orphans.shares > 0) log.warn("skipped orphaned session shares", { count: orphans.shares })
+  })
 
   log.info("json migration complete", {
-    projects: stats.projects,
-    sessions: stats.sessions,
-    messages: stats.messages,
-    parts: stats.parts,
-    todos: stats.todos,
-    permissions: stats.permissions,
-    shares: stats.shares,
+    ...stats,
     errorCount: stats.errors.length,
     duration: Math.round(performance.now() - start),
   })
 
-  if (stats.errors.length > 0) {
-    log.warn("migration errors", { errors: stats.errors.slice(0, 20) })
-  }
+  if (stats.errors.length > 0) log.warn("migration errors", { errors: stats.errors.slice(0, 20) })
 
   progress?.({ current: total, total, label: "complete" })
 

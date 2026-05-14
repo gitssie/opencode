@@ -76,8 +76,8 @@ delete process.env["SAMBANOVA_API_KEY"]
 delete process.env["OPENCODE_SERVER_PASSWORD"]
 delete process.env["OPENCODE_SERVER_USERNAME"]
 
-// Use in-memory sqlite
-process.env["OPENCODE_DB"] = ":memory:"
+// Tests use PostgreSQL in this branch. Keep a caller-provided URL when present.
+process.env["OPENCODE_DB"] = process.env["OPENCODE_DB_URL"] ?? "postgres://localhost/opencode_test"
 
 // Now safe to import from src/
 const { Log } = await import("@opencode-ai/core/util/log")

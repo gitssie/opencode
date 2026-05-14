@@ -1,17 +1,17 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, jsonb } from "drizzle-orm/pg-core"
 
-export const EventSequenceTable = sqliteTable("event_sequence", {
+export const EventSequenceTable = pgTable("event_sequence", {
   aggregate_id: text().notNull().primaryKey(),
-  seq: integer().notNull(),
+  seq: bigint({ mode: "number" }).notNull(),
   owner_id: text(),
 })
 
-export const EventTable = sqliteTable("event", {
+export const EventTable = pgTable("event", {
   id: text().primaryKey(),
   aggregate_id: text()
     .notNull()
     .references(() => EventSequenceTable.aggregate_id, { onDelete: "cascade" }),
-  seq: integer().notNull(),
+  seq: bigint({ mode: "number" }).notNull(),
   type: text().notNull(),
-  data: text({ mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  data: jsonb().$type<Record<string, unknown>>().notNull(),
 })

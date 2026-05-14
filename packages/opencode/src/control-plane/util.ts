@@ -1,7 +1,7 @@
 import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { Effect } from "effect"
 
-export function waitEvent(input: { timeout: number; signal?: AbortSignal; fn: (event: GlobalEvent) => boolean }) {
+export function waitEvent(input: { timeout: number; signal?: AbortSignal; fn: (event: GlobalEvent) => boolean | Promise<boolean> }) {
   if (input.signal?.aborted) return Effect.fail(input.signal.reason ?? new Error("Request aborted"))
 
   return Effect.callback<void, unknown>((resume) => {
@@ -12,9 +12,14 @@ export function waitEvent(input: { timeout: number; signal?: AbortSignal; fn: (e
 
     const handler = (event: GlobalEvent) => {
       try {
-        if (!input.fn(event)) return
-        cleanup()
-        resume(Effect.void)
+        void Promise.resolve(input.fn(event)).then((done) => {
+          if (!done) return
+          cleanup()
+          resume(Effect.void)
+        }, (error) => {
+          cleanup()
+          resume(Effect.fail(error))
+        })
       } catch (error) {
         cleanup()
         resume(Effect.fail(error))

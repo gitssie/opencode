@@ -44,26 +44,24 @@ export const layer: Layer.Layer<Service> = Layer.effect(
     const decode = Schema.decodeUnknownSync(Info)
 
     const query = <A>(f: DbTransactionCallback<A>) =>
-      Effect.try({
-        try: () => Database.use(f),
-        catch: (cause) => new AccountRepoError({ message: "Database operation failed", cause }),
-      })
+      Effect.promise(() => Database.use(f)).pipe(
+        Effect.mapError((cause) => new AccountRepoError({ message: "Database operation failed", cause })),
+      )
 
     const tx = <A>(f: DbTransactionCallback<A>) =>
-      Effect.try({
-        try: () => Database.transaction(f),
-        catch: (cause) => new AccountRepoError({ message: "Database operation failed", cause }),
-      })
+      Effect.promise(() => Database.transaction(f)).pipe(
+        Effect.mapError((cause) => new AccountRepoError({ message: "Database operation failed", cause })),
+      )
 
-    const current = (db: DbClient) => {
-      const state = db.select().from(AccountStateTable).where(eq(AccountStateTable.id, ACCOUNT_STATE_ID)).get()
+    const current = async (db: DbClient) => {
+      const state = (await db.select().from(AccountStateTable).where(eq(AccountStateTable.id, ACCOUNT_STATE_ID)))[0]
       if (!state?.active_account_id) return
-      const account = db.select().from(AccountTable).where(eq(AccountTable.id, state.active_account_id)).get()
+      const account = (await db.select().from(AccountTable).where(eq(AccountTable.id, state.active_account_id)))[0]
       if (!account) return
       return { ...account, active_org_id: state.active_org_id ?? null }
     }
 
-    const state = (db: DbClient, accountID: AccountID, orgID: Option.Option<OrgID>) => {
+    const state = async (db: DbClient, accountID: AccountID, orgID: Option.Option<OrgID>) => {
       const id = Option.getOrNull(orgID)
       return db
         .insert(AccountStateTable)
@@ -72,7 +70,6 @@ export const layer: Layer.Layer<Service> = Layer.effect(
           target: AccountStateTable.id,
           set: { active_account_id: accountID, active_org_id: id },
         })
-        .run()
     }
 
     const active = Effect.fn("AccountRepo.active")(() =>
@@ -80,22 +77,18 @@ export const layer: Layer.Layer<Service> = Layer.effect(
     )
 
     const list = Effect.fn("AccountRepo.list")(() =>
-      query((db) =>
-        db
-          .select()
-          .from(AccountTable)
-          .all()
-          .map((row: AccountRow) => decode({ ...row, active_org_id: null })),
+      query(async (db) =>
+        (await db.select().from(AccountTable)).map((row: AccountRow) => decode({ ...row, active_org_id: null })),
       ),
     )
 
     const remove = Effect.fn("AccountRepo.remove")((accountID: AccountID) =>
-      tx((db) => {
-        db.update(AccountStateTable)
+      tx(async (db) => {
+        await db
+          .update(AccountStateTable)
           .set({ active_account_id: null, active_org_id: null })
           .where(eq(AccountStateTable.active_account_id, accountID))
-          .run()
-        db.delete(AccountTable).where(eq(AccountTable.id, accountID)).run()
+        await db.delete(AccountTable).where(eq(AccountTable.id, accountID))
       }).pipe(Effect.asVoid),
     )
 
@@ -104,7 +97,7 @@ export const layer: Layer.Layer<Service> = Layer.effect(
     )
 
     const getRow = Effect.fn("AccountRepo.getRow")((accountID: AccountID) =>
-      query((db) => db.select().from(AccountTable).where(eq(AccountTable.id, accountID)).get()).pipe(
+      query(async (db) => (await db.select().from(AccountTable).where(eq(AccountTable.id, accountID)))[0]).pipe(
         Effect.map(Option.fromNullishOr),
       ),
     )
@@ -118,16 +111,16 @@ export const layer: Layer.Layer<Service> = Layer.effect(
             refresh_token: input.refreshToken,
             token_expiry: Option.getOrNull(input.expiry),
           })
-          .where(eq(AccountTable.id, input.accountID))
-          .run(),
+          .where(eq(AccountTable.id, input.accountID)),
       ).pipe(Effect.asVoid),
     )
 
     const persistAccount = Effect.fn("AccountRepo.persistAccount")((input) =>
-      tx((db) => {
+      tx(async (db) => {
         const url = normalizeServerUrl(input.url)
 
-        db.insert(AccountTable)
+        await db
+          .insert(AccountTable)
           .values({
             id: input.id,
             email: input.email,
@@ -146,8 +139,7 @@ export const layer: Layer.Layer<Service> = Layer.effect(
               token_expiry: input.expiry,
             },
           })
-          .run()
-        void state(db, input.id, input.orgID)
+        await state(db, input.id, input.orgID)
       }).pipe(Effect.asVoid),
     )
 

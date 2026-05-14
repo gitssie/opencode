@@ -29,8 +29,9 @@ function usage(part: MessageV2.Part | (typeof PartTable.$inferSelect)["data"]): 
   return { cost: part.cost, tokens: part.tokens }
 }
 
-function applyUsage(db: TxOrDb, sessionID: Session.Info["id"], value: Usage, sign = 1) {
-  db.update(SessionTable)
+async function applyUsage(db: TxOrDb, sessionID: Session.Info["id"], value: Usage, sign = 1) {
+  await db
+    .update(SessionTable)
     .set({
       cost: sql`${SessionTable.cost} + ${value.cost * sign}`,
       tokens_input: sql`${SessionTable.tokens_input} + ${value.tokens.input * sign}`,
@@ -41,7 +42,6 @@ function applyUsage(db: TxOrDb, sessionID: Session.Info["id"], value: Usage, sig
       time_updated: sql`${SessionTable.time_updated}`,
     })
     .where(eq(SessionTable.id, sessionID))
-    .run()
 }
 
 function grab<T extends object, K1 extends keyof T, X>(
@@ -97,37 +97,35 @@ export function toPartialRow(info: DeepPartial<Session.Info>) {
 }
 
 export default [
-  SyncEvent.project(Session.Event.Created, (db, data) => {
-    db.insert(SessionTable)
-      .values(Session.toRow(data.info as Session.Info))
-      .run()
+  SyncEvent.project(Session.Event.Created, async (db, data) => {
+    await db.insert(SessionTable).values(Session.toRow(data.info as Session.Info))
 
     if (data.info.workspaceID) {
-      db.update(WorkspaceTable).set({ time_used: Date.now() }).where(eq(WorkspaceTable.id, data.info.workspaceID)).run()
+      await db.update(WorkspaceTable).set({ time_used: Date.now() }).where(eq(WorkspaceTable.id, data.info.workspaceID))
     }
   }),
 
-  SyncEvent.project(Session.Event.Updated, (db, data) => {
+  SyncEvent.project(Session.Event.Updated, async (db, data) => {
     const info = data.info
-    const row = db
+    const rows = await db
       .update(SessionTable)
       .set({ time_updated: sql`${SessionTable.time_updated}`, ...toPartialRow(info as Session.Patch) })
       .where(eq(SessionTable.id, data.sessionID))
       .returning()
-      .get()
-    if (!row) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
+    if (!rows[0]) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
   }),
 
-  SyncEvent.project(Session.Event.Deleted, (db, data) => {
-    db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID)).run()
+  SyncEvent.project(Session.Event.Deleted, async (db, data) => {
+    await db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID))
   }),
 
-  SyncEvent.project(MessageV2.Event.Updated, (db, data) => {
+  SyncEvent.project(MessageV2.Event.Updated, async (db, data) => {
     const time_created = data.info.time.created
     const { id, sessionID, ...rest } = data.info
 
     try {
-      db.insert(MessageTable)
+      await db
+        .insert(MessageTable)
         .values({
           id,
           session_id: sessionID,
@@ -135,47 +133,48 @@ export default [
           data: rest,
         })
         .onConflictDoUpdate({ target: MessageTable.id, set: { data: rest } })
-        .run()
     } catch (err) {
       if (!foreign(err)) throw err
       log.warn("ignored late message update", { messageID: id, sessionID })
     }
   }),
 
-  SyncEvent.project(MessageV2.Event.Removed, (db, data) => {
-    for (const row of db
+  SyncEvent.project(MessageV2.Event.Removed, async (db, data) => {
+    const parts = await db
       .select()
       .from(PartTable)
       .where(and(eq(PartTable.message_id, data.messageID), eq(PartTable.session_id, data.sessionID)))
-      .all()) {
+    for (const row of parts) {
       const previous = usage(row.data)
-      if (previous) applyUsage(db, data.sessionID, previous, -1)
+      if (previous) await applyUsage(db, data.sessionID, previous, -1)
     }
-    db.delete(MessageTable)
+    await db
+      .delete(MessageTable)
       .where(and(eq(MessageTable.id, data.messageID), eq(MessageTable.session_id, data.sessionID)))
-      .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartRemoved, (db, data) => {
-    const row = db
+  SyncEvent.project(MessageV2.Event.PartRemoved, async (db, data) => {
+    const rows = await db
       .select()
       .from(PartTable)
       .where(and(eq(PartTable.id, data.partID), eq(PartTable.session_id, data.sessionID)))
-      .get()
+    const row = rows[0]
     const previous = row && usage(row.data)
-    if (previous) applyUsage(db, data.sessionID, previous, -1)
+    if (previous) await applyUsage(db, data.sessionID, previous, -1)
 
-    db.delete(PartTable)
+    await db
+      .delete(PartTable)
       .where(and(eq(PartTable.id, data.partID), eq(PartTable.session_id, data.sessionID)))
-      .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartUpdated, (db, data) => {
+  SyncEvent.project(MessageV2.Event.PartUpdated, async (db, data) => {
     const { id, messageID, sessionID, ...rest } = data.part
-    const row = db.select().from(PartTable).where(eq(PartTable.id, id)).get()
+    const rows = await db.select().from(PartTable).where(eq(PartTable.id, id))
+    const row = rows[0]
 
     try {
-      db.insert(PartTable)
+      await db
+        .insert(PartTable)
         .values({
           id,
           message_id: messageID,
@@ -184,11 +183,10 @@ export default [
           data: rest,
         })
         .onConflictDoUpdate({ target: PartTable.id, set: { data: rest } })
-        .run()
       const previous = row && usage(row.data)
       const next = usage(data.part)
-      if (previous) applyUsage(db, row.session_id, previous, -1)
-      if (next) applyUsage(db, sessionID, next)
+      if (previous) await applyUsage(db, row.session_id, previous, -1)
+      if (next) await applyUsage(db, sessionID, next)
     } catch (err) {
       if (!foreign(err)) throw err
       log.warn("ignored late part update", { partID: id, messageID, sessionID })

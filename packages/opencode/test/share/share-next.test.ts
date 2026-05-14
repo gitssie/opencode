@@ -70,7 +70,7 @@ function wired(client: HttpClient.HttpClient) {
 }
 
 const share = (id: SessionID) =>
-  Database.use((db) => db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, id)).get())
+  Database.use((db) => db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, id)).then((rows) => rows[0]))
 
 const seed = (url: string, org?: string) =>
   AccountRepo.Service.use((repo) =>
@@ -171,7 +171,7 @@ describe("ShareNext", () => {
           expect(result.url).toBe("https://legacy-share.example.com/share/abc")
           expect(result.secret).toBe("sec_123")
 
-          const row = share(session.id)
+          const row = yield* Effect.promise(() => share(session.id))
           expect(row?.id).toBe("shr_abc")
           expect(row?.url).toBe("https://legacy-share.example.com/share/abc")
           expect(row?.secret).toBe("sec_123")
@@ -209,7 +209,7 @@ describe("ShareNext", () => {
             yield* ShareNext.Service.use((svc) => svc.remove(session.id))
           }).pipe(Effect.provide(live(client)))
 
-          expect(share(session.id)).toBeUndefined()
+          expect(yield* Effect.promise(() => share(session.id))).toBeUndefined()
           expect(seen.map((req) => [req.method, req.url])).toEqual([
             ["POST", "https://legacy-share.example.com/api/share"],
             ["DELETE", "https://legacy-share.example.com/api/share/shr_abc"],
@@ -230,7 +230,7 @@ describe("ShareNext", () => {
         )
 
         expect(Exit.isFailure(exit)).toBe(true)
-        expect(share(session.id)).toBeUndefined()
+        expect(yield* Effect.promise(() => share(session.id))).toBeUndefined()
       }),
     ),
   )
@@ -254,17 +254,14 @@ describe("ShareNext", () => {
           const info = yield* session.create({ title: "first" })
           yield* share.init()
           yield* Effect.sleep(50)
-          yield* Effect.sync(() =>
+          yield* Effect.promise(() =>
             Database.use((db) =>
-              db
-                .insert(SessionShareTable)
-                .values({
-                  session_id: info.id,
-                  id: "shr_abc",
-                  url: "https://legacy-share.example.com/share/abc",
-                  secret: "sec_123",
-                })
-                .run(),
+              db.insert(SessionShareTable).values({
+                session_id: info.id,
+                id: "shr_abc",
+                url: "https://legacy-share.example.com/share/abc",
+                secret: "sec_123",
+              }),
             ),
           )
 

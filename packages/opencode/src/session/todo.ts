@@ -39,11 +39,12 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
 
     const update = Effect.fn("Todo.update")(function* (input: { sessionID: SessionID; todos: Info[] }) {
-      yield* Effect.sync(() =>
-        Database.transaction((db) => {
-          db.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
+      yield* Effect.promise(() =>
+        Database.transaction(async (db) => {
+          await db.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID))
           if (input.todos.length === 0) return
-          db.insert(TodoTable)
+          await db
+            .insert(TodoTable)
             .values(
               input.todos.map((todo, position) => ({
                 session_id: input.sessionID,
@@ -53,16 +54,15 @@ export const layer = Layer.effect(
                 position,
               })),
             )
-            .run()
         }),
       )
       yield* bus.publish(Event.Updated, input)
     })
 
     const get = Effect.fn("Todo.get")(function* (sessionID: SessionID) {
-      const rows = yield* Effect.sync(() =>
+      const rows = yield* Effect.promise(() =>
         Database.use((db) =>
-          db.select().from(TodoTable).where(eq(TodoTable.session_id, sessionID)).orderBy(asc(TodoTable.position)).all(),
+          db.select().from(TodoTable).where(eq(TodoTable.session_id, sessionID)).orderBy(asc(TodoTable.position)),
         ),
       )
       return rows.map((row) => ({

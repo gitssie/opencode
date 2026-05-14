@@ -1,8 +1,8 @@
-import { Database } from "bun:sqlite"
-import { drizzle } from "drizzle-orm/bun-sqlite"
+import { Pool } from "pg"
+import { drizzle } from "drizzle-orm/node-postgres"
 
-export function init(path: string) {
-  const sqlite = new Database(path, { create: true })
-  const db = drizzle({ client: sqlite })
+export function init(connectionString: string) {
+  const pool = new Pool({ connectionString })
+  const db = drizzle({ client: pool })
   return db
 }

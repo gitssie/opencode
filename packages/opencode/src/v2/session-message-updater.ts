@@ -7,14 +7,14 @@ export type MemoryState = {
 }
 
 export interface Adapter<Result> {
-  readonly getCurrentAssistant: () => SessionMessage.Assistant | undefined
-  readonly getCurrentCompaction: () => SessionMessage.Compaction | undefined
-  readonly getCurrentShell: (callID: string) => SessionMessage.Shell | undefined
-  readonly updateAssistant: (assistant: SessionMessage.Assistant) => void
-  readonly updateCompaction: (compaction: SessionMessage.Compaction) => void
-  readonly updateShell: (shell: SessionMessage.Shell) => void
-  readonly appendMessage: (message: SessionMessage.Message) => void
-  readonly finish: () => Result
+  readonly getCurrentAssistant: () => SessionMessage.Assistant | undefined | Promise<SessionMessage.Assistant | undefined>
+  readonly getCurrentCompaction: () => SessionMessage.Compaction | undefined | Promise<SessionMessage.Compaction | undefined>
+  readonly getCurrentShell: (callID: string) => SessionMessage.Shell | undefined | Promise<SessionMessage.Shell | undefined>
+  readonly updateAssistant: (assistant: SessionMessage.Assistant) => void | Promise<void>
+  readonly updateCompaction: (compaction: SessionMessage.Compaction) => void | Promise<void>
+  readonly updateShell: (shell: SessionMessage.Shell) => void | Promise<void>
+  readonly appendMessage: (message: SessionMessage.Message) => void | Promise<void>
+  readonly finish: () => Result | Promise<Result>
 }
 
 export function memory(state: MemoryState): Adapter<MemoryState> {
@@ -73,8 +73,8 @@ export function memory(state: MemoryState): Adapter<MemoryState> {
   }
 }
 
-export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Event): Result {
-  const currentAssistant = adapter.getCurrentAssistant()
+export async function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Event): Promise<Result> {
+  const currentAssistant = await adapter.getCurrentAssistant()
   type DraftAssistant = WritableDraft<SessionMessage.Assistant>
   type DraftTool = WritableDraft<SessionMessage.AssistantTool>
   type DraftText = WritableDraft<SessionMessage.AssistantText>
@@ -91,9 +91,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
   const latestReasoning = (assistant: DraftAssistant | undefined, reasoningID: string) =>
     assistant?.content.findLast((item): item is DraftReasoning => item.type === "reasoning" && item.id === reasoningID)
 
-  SessionEvent.All.match(event, {
-    "session.next.agent.switched": (event) => {
-      adapter.appendMessage(
+  switch (event.type) {
+    case "session.next.agent.switched":
+      await adapter.appendMessage(
         new SessionMessage.AgentSwitched({
           id: event.id,
           type: "agent-switched",
@@ -102,9 +102,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.model.switched": (event) => {
-      adapter.appendMessage(
+      break
+    case "session.next.model.switched":
+      await adapter.appendMessage(
         new SessionMessage.ModelSwitched({
           id: event.id,
           type: "model-switched",
@@ -113,9 +113,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.prompted": (event) => {
-      adapter.appendMessage(
+      break
+    case "session.next.prompted":
+      await adapter.appendMessage(
         new SessionMessage.User({
           id: event.id,
           type: "user",
@@ -127,9 +127,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.synthetic": (event) => {
-      adapter.appendMessage(
+      break
+    case "session.next.synthetic":
+      await adapter.appendMessage(
         new SessionMessage.Synthetic({
           sessionID: event.data.sessionID,
           text: event.data.text,
@@ -138,9 +138,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.shell.started": (event) => {
-      adapter.appendMessage(
+      break
+    case "session.next.shell.started":
+      await adapter.appendMessage(
         new SessionMessage.Shell({
           id: event.id,
           type: "shell",
@@ -151,27 +151,28 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.shell.ended": (event) => {
-      const currentShell = adapter.getCurrentShell(event.data.callID)
+      break
+    case "session.next.shell.ended": {
+      const currentShell = await adapter.getCurrentShell(event.data.callID)
       if (currentShell) {
-        adapter.updateShell(
+        await adapter.updateShell(
           produce(currentShell, (draft) => {
             draft.output = event.data.output
             draft.time.completed = event.data.timestamp
           }),
         )
       }
-    },
-    "session.next.step.started": (event) => {
+      break
+    }
+    case "session.next.step.started":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.time.completed = event.data.timestamp
           }),
         )
       }
-      adapter.appendMessage(
+      await adapter.appendMessage(
         new SessionMessage.Assistant({
           id: event.id,
           type: "assistant",
@@ -182,10 +183,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           snapshot: event.data.snapshot ? { start: event.data.snapshot } : undefined,
         }),
       )
-    },
-    "session.next.step.ended": (event) => {
+      break
+    case "session.next.step.ended":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.time.completed = event.data.timestamp
             draft.finish = event.data.finish
@@ -195,10 +196,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.step.failed": (event) => {
+      break
+    case "session.next.step.failed":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.time.completed = event.data.timestamp
             draft.finish = "error"
@@ -206,10 +207,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.text.started": () => {
+      break
+    case "session.next.text.started":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.content.push({
               type: "text",
@@ -218,30 +219,30 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.text.delta": (event) => {
+      break
+    case "session.next.text.delta":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestText(draft)
             if (match) match.text += event.data.delta
           }),
         )
       }
-    },
-    "session.next.text.ended": (event) => {
+      break
+    case "session.next.text.ended":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestText(draft)
             if (match) match.text = event.data.text
           }),
         )
       }
-    },
-    "session.next.tool.input.started": (event) => {
+      break
+    case "session.next.tool.input.started":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.content.push({
               type: "tool",
@@ -258,22 +259,22 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.tool.input.delta": (event) => {
+      break
+    case "session.next.tool.input.delta":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestTool(draft, event.data.callID)
-            // oxlint-disable-next-line no-base-to-string -- event.delta is a Schema.String (runtime string)
             if (match && match.state.status === "pending") match.state.input += event.data.delta
           }),
         )
       }
-    },
-    "session.next.tool.input.ended": () => {},
-    "session.next.tool.called": (event) => {
+      break
+    case "session.next.tool.input.ended":
+      break
+    case "session.next.tool.called":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestTool(draft, event.data.callID)
             if (match) {
@@ -289,10 +290,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.tool.progress": (event) => {
+      break
+    case "session.next.tool.progress":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestTool(draft, event.data.callID)
             if (match && match.state.status === "running") {
@@ -302,10 +303,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.tool.success": (event) => {
+      break
+    case "session.next.tool.success":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestTool(draft, event.data.callID)
             if (match && match.state.status === "running") {
@@ -321,10 +322,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.tool.failed": (event) => {
+      break
+    case "session.next.tool.failed":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestTool(draft, event.data.callID)
             if (match && match.state.status === "running") {
@@ -341,10 +342,10 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.reasoning.started": (event) => {
+      break
+    case "session.next.reasoning.started":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             draft.content.push({
               type: "reasoning",
@@ -354,30 +355,31 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           }),
         )
       }
-    },
-    "session.next.reasoning.delta": (event) => {
+      break
+    case "session.next.reasoning.delta":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestReasoning(draft, event.data.reasoningID)
             if (match) match.text += event.data.delta
           }),
         )
       }
-    },
-    "session.next.reasoning.ended": (event) => {
+      break
+    case "session.next.reasoning.ended":
       if (currentAssistant) {
-        adapter.updateAssistant(
+        await adapter.updateAssistant(
           produce(currentAssistant, (draft) => {
             const match = latestReasoning(draft, event.data.reasoningID)
             if (match) match.text = event.data.text
           }),
         )
       }
-    },
-    "session.next.retried": () => {},
-    "session.next.compaction.started": (event) => {
-      adapter.appendMessage(
+      break
+    case "session.next.retried":
+      break
+    case "session.next.compaction.started":
+      await adapter.appendMessage(
         new SessionMessage.Compaction({
           id: event.id,
           type: "compaction",
@@ -387,31 +389,33 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
           time: { created: event.data.timestamp },
         }),
       )
-    },
-    "session.next.compaction.delta": (event) => {
-      const currentCompaction = adapter.getCurrentCompaction()
+      break
+    case "session.next.compaction.delta": {
+      const currentCompaction = await adapter.getCurrentCompaction()
       if (currentCompaction) {
-        adapter.updateCompaction(
+        await adapter.updateCompaction(
           produce(currentCompaction, (draft) => {
             draft.summary += event.data.text
           }),
         )
       }
-    },
-    "session.next.compaction.ended": (event) => {
-      const currentCompaction = adapter.getCurrentCompaction()
+      break
+    }
+    case "session.next.compaction.ended": {
+      const currentCompaction = await adapter.getCurrentCompaction()
       if (currentCompaction) {
-        adapter.updateCompaction(
+        await adapter.updateCompaction(
           produce(currentCompaction, (draft) => {
             draft.summary = event.data.text
             draft.include = event.data.include
           }),
         )
       }
-    },
-  })
+      break
+    }
+  }
 
-  return adapter.finish()
+  return await adapter.finish()
 }
 
 export * as SessionMessageUpdater from "./session-message-updater"

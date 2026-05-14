@@ -1,6 +1,6 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import { bigint, pgTable, text } from "drizzle-orm/pg-core"
 
-export const DataMigrationTable = sqliteTable("data_migration", {
+export const DataMigrationTable = pgTable("data_migration", {
   name: text().primaryKey(),
-  time_completed: integer().notNull(),
+  time_completed: bigint({ mode: "number" }).notNull(),
 })

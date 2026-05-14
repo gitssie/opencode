@@ -11,13 +11,13 @@ export const HEADER = "x-opencode-sync"
 export type State = Record<string, number>
 const log = Log.create({ service: "fence" })
 
-export function load(ids?: string[]) {
-  const rows = Database.use((db) => {
+export async function load(ids?: string[]) {
+  const rows = await Database.use((db) => {
     if (!ids?.length) {
-      return db.select().from(EventSequenceTable).all()
+      return db.select().from(EventSequenceTable)
     }
 
-    return db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, ids)).all()
+    return db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, ids))
   })
 
   return Object.fromEntries(rows.map((row) => [row.aggregate_id, row.seq])) as State

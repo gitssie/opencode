@@ -494,8 +494,10 @@ it.instance(
       const messages = yield* SessionV2.Service.use((session) => session.messages({ sessionID: chat.id })).pipe(
         Effect.provide(SessionV2.layer),
       )
-      const row = Database.use((db) =>
-        db.select().from(SessionMessageTable).where(Database.eq(SessionMessageTable.session_id, chat.id)).get(),
+      const row = yield* Effect.promise(() =>
+        Database.use((db) =>
+          db.select().from(SessionMessageTable).where(Database.eq(SessionMessageTable.session_id, chat.id)).then((rows) => rows[0]),
+        ),
       )
       expect(messages.find((message) => message.type === "user")).toMatchObject({ type: "user", text: "hello v2" })
       expect(typeof row?.data.time.created).toBe("number")

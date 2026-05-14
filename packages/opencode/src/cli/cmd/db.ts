@@ -1,8 +1,5 @@
 import type { Argv } from "yargs"
-import { spawn } from "child_process"
 import { Database } from "@/storage/db"
-import { drizzle } from "drizzle-orm/bun-sqlite"
-import { Database as BunDatabase } from "bun:sqlite"
 import { UI } from "../ui"
 import { cmd } from "./cmd"
 import { JsonMigration } from "@/storage/json-migration"
@@ -11,7 +8,7 @@ import { errorMessage } from "../../util/error"
 
 const QueryCommand = cmd({
   command: "$0 [query]",
-  describe: "open an interactive sqlite3 shell or run a query",
+  describe: "run a SQL query against the PostgreSQL database",
   builder: (yargs: Argv) => {
     return yargs
       .positional("query", {
@@ -26,47 +23,49 @@ const QueryCommand = cmd({
       })
   },
   handler: async (args: { query?: string; format: string }) => {
-    const query = args.query as string | undefined
-    if (query) {
-      const db = new BunDatabase(Database.Path, { readonly: true })
-      try {
-        const result = db.query(query).all() as Record<string, unknown>[]
-        if (args.format === "json") {
-          console.log(JSON.stringify(result, null, 2))
-        } else if (result.length > 0) {
-          const keys = Object.keys(result[0])
-          console.log(keys.join("\t"))
-          for (const row of result) {
-            console.log(keys.map((k) => row[k]).join("\t"))
-          }
-        }
-      } catch (err) {
-        UI.error(errorMessage(err))
-        process.exit(1)
-      }
-      db.close()
-      return
+    const query = args.query
+    if (!query) {
+      UI.error("A SQL query is required. Interactive psql shell: psql \"$OPENCODE_DB_URL\"")
+      process.exit(1)
     }
-    const child = spawn("sqlite3", [Database.Path], {
-      stdio: "inherit",
-    })
-    await new Promise((resolve) => child.on("close", resolve))
+    try {
+      const db = Database.Client()
+      const result = await (db as any).execute(query)
+      const rows: Record<string, unknown>[] = result.rows ?? result
+      if (args.format === "json") {
+        console.log(JSON.stringify(rows, null, 2))
+      } else if (rows.length > 0) {
+        const keys = Object.keys(rows[0])
+        console.log(keys.join("\t"))
+        for (const row of rows) {
+          console.log(keys.map((k) => row[k]).join("\t"))
+        }
+      }
+    } catch (err) {
+      UI.error(errorMessage(err))
+      process.exit(1)
+    }
   },
 })
 
 const PathCommand = cmd({
   command: "path",
-  describe: "print the database path",
+  describe: "print the database connection URL (redacted)",
   handler: () => {
-    console.log(Database.Path)
+    try {
+      const url = new URL(Database.Path)
+      if (url.password) url.password = "***"
+      console.log(url.toString())
+    } catch {
+      console.log(Database.Path)
+    }
   },
 })
 
 const MigrateCommand = cmd({
   command: "migrate",
-  describe: "migrate JSON data to SQLite (merges with existing data)",
+  describe: "migrate JSON data to PostgreSQL (merges with existing data)",
   handler: async () => {
-    const sqlite = new BunDatabase(Database.Path)
     const tty = process.stderr.isTTY
     const width = 36
     const orange = "\x1b[38;5;214m"
@@ -75,7 +74,7 @@ const MigrateCommand = cmd({
     let last = -1
     if (tty) process.stderr.write("\x1b[?25l")
     try {
-      const stats = await JsonMigration.run(drizzle({ client: sqlite }), {
+      const stats = await JsonMigration.run(Database.Client() as any, {
         progress: (event) => {
           const percent = Math.floor((event.current / event.total) * 100)
           if (percent === last) return
@@ -87,13 +86,13 @@ const MigrateCommand = cmd({
               `\r${orange}${bar} ${percent.toString().padStart(3)}%${reset} ${muted}${event.current}/${event.total}${reset} `,
             )
           } else {
-            process.stderr.write(`sqlite-migration:${percent}${EOL}`)
+            process.stderr.write(`pg-migration:${percent}${EOL}`)
           }
         },
       })
       if (tty) process.stderr.write("\n")
       if (tty) process.stderr.write("\x1b[?25h")
-      else process.stderr.write(`sqlite-migration:done${EOL}`)
+      else process.stderr.write(`pg-migration:done${EOL}`)
       UI.println(
         `Migration complete: ${stats.projects} projects, ${stats.sessions} sessions, ${stats.messages} messages`,
       )
@@ -104,8 +103,6 @@ const MigrateCommand = cmd({
       if (tty) process.stderr.write("\x1b[?25h")
       UI.error(`Migration failed: ${errorMessage(err)}`)
       process.exit(1)
-    } finally {
-      sqlite.close()
     }
   },
 })

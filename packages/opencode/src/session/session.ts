@@ -504,8 +504,8 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 export type Patch = Types.DeepMutable<SyncEvent.Event<typeof Event.Updated>["data"]["info"]>
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T | Promise<T>) =>
+  Effect.promise(() => Database.use(fn))
 
 export const layer: Layer.Layer<
   Service,
@@ -568,15 +568,17 @@ export const layer: Layer.Layer<
     })
 
     const get = Effect.fn("Session.get")(function* (id: SessionID) {
-      const row = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+      const row = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, id)).then((rows) => rows[0]))
       if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
       return fromRow(row)
     })
 
     const list = Effect.fn("Session.list")(function* (input?: ListInput) {
       const ctx = yield* InstanceState.context
-      return Array.from(
-        listByProject({ projectID: ctx.project.id, experimentalWorkspaces: flags.experimentalWorkspaces, ...input }),
+      return yield* Effect.promise(() =>
+        Array.fromAsync(
+          listByProject({ projectID: ctx.project.id, experimentalWorkspaces: flags.experimentalWorkspaces, ...input }),
+        ),
       )
     })
 
@@ -585,8 +587,7 @@ export const layer: Layer.Layer<
         d
           .select()
           .from(SessionTable)
-          .where(and(eq(SessionTable.parent_id, parentID)))
-          .all(),
+          .where(and(eq(SessionTable.parent_id, parentID))),
       )
       return rows.map(fromRow)
     })
@@ -632,18 +633,20 @@ export const layer: Layer.Layer<
       }).pipe(Effect.withSpan("Session.updatePart"))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
-      const row = Database.use((db) =>
-        db
-          .select()
-          .from(PartTable)
-          .where(
-            and(
-              eq(PartTable.session_id, input.sessionID),
-              eq(PartTable.message_id, input.messageID),
-              eq(PartTable.id, input.partID),
-            ),
-          )
-          .get(),
+      const row = yield* Effect.promise(() =>
+        Database.use((db) =>
+          db
+            .select()
+            .from(PartTable)
+            .where(
+              and(
+                eq(PartTable.session_id, input.sessionID),
+                eq(PartTable.message_id, input.messageID),
+                eq(PartTable.id, input.partID),
+              ),
+            )
+            .then((rows) => rows[0]),
+        ),
       )
       if (!row) return
       return {
@@ -870,7 +873,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(RuntimeFlags.defaultLayer),
 )
 
-function* listByProject(
+async function* listByProject(
   input: ListInput & {
     projectID: ProjectID
     experimentalWorkspaces: boolean
@@ -908,21 +911,15 @@ function* listByProject(
 
   const limit = input.limit ?? 100
 
-  const rows = Database.use((db) =>
-    db
-      .select()
-      .from(SessionTable)
-      .where(and(...conditions))
-      .orderBy(desc(SessionTable.time_updated))
-      .limit(limit)
-      .all(),
+  const rows = await Database.use((db) =>
+    db.select().from(SessionTable).where(and(...conditions)).orderBy(desc(SessionTable.time_updated)).limit(limit),
   )
   for (const row of rows) {
     yield fromRow(row)
   }
 }
 
-export function* listGlobal(input?: {
+export async function* listGlobal(input?: {
   directory?: string
   roots?: boolean
   start?: number
@@ -954,7 +951,7 @@ export function* listGlobal(input?: {
 
   const limit = input?.limit ?? 100
 
-  const rows = Database.use((db) => {
+  const rows = await Database.use((db) => {
     const query =
       conditions.length > 0
         ? db
@@ -962,19 +959,19 @@ export function* listGlobal(input?: {
             .from(SessionTable)
             .where(and(...conditions))
         : db.select().from(SessionTable)
-    return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all()
+    return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit)
   })
 
   const ids = [...new Set(rows.map((row) => row.project_id))]
   const projects = new Map<string, ProjectInfo>()
 
   if (ids.length > 0) {
-    const items = Database.use((db) =>
+    const items = await Database.use((db) =>
       db
         .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
         .from(ProjectTable)
         .where(inArray(ProjectTable.id, ids))
-        .all(),
+        ,
     )
     for (const item of items) {
       projects.set(item.id, {

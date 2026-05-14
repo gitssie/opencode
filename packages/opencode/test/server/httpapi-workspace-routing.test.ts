@@ -168,10 +168,10 @@ const insertRemoteWorkspaceWithoutSync = (input: {
   type: string
   url: string
 }) =>
-  Effect.sync(() => {
+  Effect.promise(async () => {
     const id = WorkspaceID.ascending()
     registerAdapter(input.projectID, input.type, remoteAdapter(path.join(input.dir, `.${input.type}`), input.url))
-    Database.use((db) => db.insert(WorkspaceTable).values({ id, type: input.type, project_id: input.projectID }).run())
+    await Database.use((db) => db.insert(WorkspaceTable).values({ id, type: input.type, project_id: input.projectID }))
     return id
   })
 

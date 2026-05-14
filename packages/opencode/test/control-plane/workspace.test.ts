@@ -323,7 +323,7 @@ function workspaceInfo(projectID: ProjectID, type: string, input?: Partial<Works
 }
 
 function insertWorkspace(info: Workspace.Info) {
-  Database.use((db) =>
+  void Database.use((db) =>
     db
       .insert(WorkspaceTable)
       .values({
@@ -335,13 +335,12 @@ function insertWorkspace(info: Workspace.Info) {
         extra: info.extra,
         project_id: info.projectID,
         time_used: info.timeUsed,
-      })
-      .run(),
+      }),
   )
 }
 
 function insertProject(id: ProjectID, worktree: string) {
-  Database.use((db) =>
+  void Database.use((db) =>
     db
       .insert(ProjectTable)
       .values({
@@ -352,35 +351,32 @@ function insertProject(id: ProjectID, worktree: string) {
         time_created: Date.now(),
         time_updated: Date.now(),
         sandboxes: [],
-      })
-      .run(),
+      }),
   )
 }
 
 function attachSessionToWorkspace(sessionID: SessionID, workspaceID: WorkspaceID) {
-  Database.use((db) =>
-    db.update(SessionTable).set({ workspace_id: workspaceID }).where(eq(SessionTable.id, sessionID)).run(),
-  )
+  void Database.use((db) => db.update(SessionTable).set({ workspace_id: workspaceID }).where(eq(SessionTable.id, sessionID)))
 }
 
-function sessionSequence(sessionID: SessionID) {
-  return Database.use((db) =>
+async function sessionSequence(sessionID: SessionID) {
+  return (await Database.use((db) =>
     db
       .select({ seq: EventSequenceTable.seq })
       .from(EventSequenceTable)
       .where(eq(EventSequenceTable.aggregate_id, sessionID))
-      .get(),
-  )?.seq
+      .then((rows) => rows[0]),
+  ))?.seq
 }
 
-function sessionSequenceOwner(sessionID: SessionID) {
-  return Database.use((db) =>
+async function sessionSequenceOwner(sessionID: SessionID) {
+  return (await Database.use((db) =>
     db
       .select({ ownerID: EventSequenceTable.owner_id })
       .from(EventSequenceTable)
       .where(eq(EventSequenceTable.aggregate_id, sessionID))
-      .get(),
-  )?.ownerID
+      .then((rows) => rows[0]),
+  ))?.ownerID
 }
 
 function sessionUpdatedType() {
@@ -767,9 +763,7 @@ describe("workspace CRUD", () => {
       expect(recorded.calls.remove).toEqual([info])
       expect((await workspaceStatus()).find((item) => item.workspaceID === info.id)?.status).toBeUndefined()
       expect(
-        Database.use((db) =>
-          db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.workspace_id, info.id)).all(),
-        ),
+        await Database.use((db) => db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.workspace_id, info.id))),
       ).toEqual([])
     })
   })
@@ -813,15 +807,15 @@ describe("workspace CRUD", () => {
       await warpWorkspaceSession({ workspaceID: target.id, sessionID: session.id })
 
       expect(
-        Database.use((db) =>
+        (await Database.use((db) =>
           db
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get(),
-        )?.workspaceID,
+            .then((rows) => rows[0]),
+        ))?.workspaceID,
       ).toBe(target.id)
-      expect(sessionSequenceOwner(session.id)).toBe(target.id)
+      expect(await sessionSequenceOwner(session.id)).toBe(target.id)
     })
   })
 
@@ -864,15 +858,15 @@ describe("workspace CRUD", () => {
       await warpWorkspaceSession({ workspaceID: null, sessionID: session.id })
 
       expect(
-        Database.use((db) =>
+        (await Database.use((db) =>
           db
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get(),
-        )?.workspaceID,
+            .then((rows) => rows[0]),
+        ))?.workspaceID,
       ).toBeNull()
-      expect(sessionSequenceOwner(session.id)).toBe(Instance.project.id)
+      expect(await sessionSequenceOwner(session.id)).toBe(Instance.project.id)
     })
   })
 
@@ -898,16 +892,16 @@ describe("workspace CRUD", () => {
       })
 
       expect(
-        Database.use((db) =>
+        (await Database.use((db) =>
           db
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get(),
-        )?.workspaceID,
+            .then((rows) => rows[0]),
+        ))?.workspaceID,
       ).toBeNull()
-      expect(sessionSequenceOwner(session.id)).toBe(projectID)
-      expect(sessionSequenceOwner(session.id)).not.toBe(workspaceProjectID)
+      expect(await sessionSequenceOwner(session.id)).toBe(projectID)
+      expect(await sessionSequenceOwner(session.id)).not.toBe(workspaceProjectID)
     })
   })
 
@@ -965,7 +959,7 @@ describe("workspace CRUD", () => {
             const session = yield* sessionSvc.create({})
             attachSessionToWorkspace(session.id, previous.id)
             historySessionID = session.id
-            historyNextSeq = (sessionSequence(session.id) ?? -1) + 1
+            historyNextSeq = ((yield* Effect.promise(() => sessionSequence(session.id))) ?? -1) + 1
 
             yield* workspace.sessionWarp({ workspaceID: target.id, sessionID: session.id, copyChanges: true })
 
@@ -995,7 +989,7 @@ describe("workspace CRUD", () => {
             })
             expect(calls[4].json).toEqual({ sessionID: session.id })
             expect((yield* sessionSvc.get(session.id)).title).toBe("from source history")
-            expect(sessionSequenceOwner(session.id)).toBe(target.id)
+            expect(yield* Effect.promise(() => sessionSequenceOwner(session.id))).toBe(target.id)
           }),
         { git: true },
       )
@@ -1305,7 +1299,7 @@ describe("workspace sync state", () => {
               const session = yield* sessionSvc.create({ title: "before history" })
               attachSessionToWorkspace(session.id, info.id)
               historySessionID = session.id
-              historyNextSeq = (sessionSequence(session.id) ?? -1) + 1
+              historyNextSeq = ((yield* Effect.promise(() => sessionSequence(session.id))) ?? -1) + 1
 
               yield* workspace.startWorkspaceSyncing(Instance.project.id)
 
@@ -1453,7 +1447,7 @@ describe("workspace sync state", () => {
               const session = yield* sessionSvc.create({ title: "before sse" })
               attachSessionToWorkspace(session.id, info.id)
               sseSessionID = session.id
-              sseNextSeq = (sessionSequence(session.id) ?? -1) + 1
+              sseNextSeq = ((yield* Effect.promise(() => sessionSequence(session.id))) ?? -1) + 1
 
               yield* workspace.startWorkspaceSyncing(Instance.project.id)
 
@@ -1491,7 +1485,7 @@ describe("workspace waitForSync", () => {
   test("returns immediately when the stored sequence already satisfies the fence", async () => {
     await withInstance(async () => {
       const sessionID = SessionID.descending("ses_wait_done")
-      Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 4 }).run())
+      await Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 4 }))
 
       await expect(
         waitForWorkspaceSync(WorkspaceID.ascending("wrk_wait_done"), { [sessionID]: 4 }),
@@ -1506,13 +1500,11 @@ describe("workspace waitForSync", () => {
     await withInstance(async () => {
       const workspaceID = WorkspaceID.ascending("wrk_wait_event")
       const sessionID = SessionID.descending("ses_wait_event")
-      Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 1 }).run())
+      await Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 1 }))
 
       const waited = waitForWorkspaceSync(workspaceID, { [sessionID]: 2 })
       await delay(10)
-      Database.use((db) =>
-        db.update(EventSequenceTable).set({ seq: 2 }).where(eq(EventSequenceTable.aggregate_id, sessionID)).run(),
-      )
+      await Database.use((db) => db.update(EventSequenceTable).set({ seq: 2 }).where(eq(EventSequenceTable.aggregate_id, sessionID)))
       GlobalBus.emit("event", { workspace: workspaceID, payload: { type: "anything" } })
 
       await expect(waited).resolves.toBeUndefined()
@@ -1523,13 +1515,11 @@ describe("workspace waitForSync", () => {
     await withInstance(async () => {
       const workspaceID = WorkspaceID.ascending("wrk_wait_sync_any")
       const sessionID = SessionID.descending("ses_wait_sync_any")
-      Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 0 }).run())
+      await Database.use((db) => db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 0 }))
 
       const waited = waitForWorkspaceSync(workspaceID, { [sessionID]: 1 })
       await delay(10)
-      Database.use((db) =>
-        db.update(EventSequenceTable).set({ seq: 1 }).where(eq(EventSequenceTable.aggregate_id, sessionID)).run(),
-      )
+      await Database.use((db) => db.update(EventSequenceTable).set({ seq: 1 }).where(eq(EventSequenceTable.aggregate_id, sessionID)))
       GlobalBus.emit("event", {
         workspace: WorkspaceID.ascending("wrk_other_workspace"),
         payload: { type: "sync" },

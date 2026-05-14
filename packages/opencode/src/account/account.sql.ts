@@ -1,19 +1,19 @@
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, integer, primaryKey, boolean } from "drizzle-orm/pg-core"
 
 import { type AccessToken, type AccountID, type OrgID, type RefreshToken } from "./schema"
 import { Timestamps } from "../storage/schema.sql"
 
-export const AccountTable = sqliteTable("account", {
+export const AccountTable = pgTable("account", {
   id: text().$type<AccountID>().primaryKey(),
   email: text().notNull(),
   url: text().notNull(),
   access_token: text().$type<AccessToken>().notNull(),
   refresh_token: text().$type<RefreshToken>().notNull(),
-  token_expiry: integer(),
+  token_expiry: bigint({ mode: "number" }),
   ...Timestamps,
 })
 
-export const AccountStateTable = sqliteTable("account_state", {
+export const AccountStateTable = pgTable("account_state", {
   id: integer().primaryKey(),
   active_account_id: text()
     .$type<AccountID>()
@@ -22,15 +22,15 @@ export const AccountStateTable = sqliteTable("account_state", {
 })
 
 // LEGACY
-export const ControlAccountTable = sqliteTable(
+export const ControlAccountTable = pgTable(
   "control_account",
   {
     email: text().notNull(),
     url: text().notNull(),
     access_token: text().$type<AccessToken>().notNull(),
     refresh_token: text().$type<RefreshToken>().notNull(),
-    token_expiry: integer(),
-    active: integer({ mode: "boolean" })
+    token_expiry: bigint({ mode: "number" }),
+    active: boolean()
       .notNull()
       .$default(() => false),
     ...Timestamps,

@@ -62,35 +62,22 @@ function waitReady(input: { directory?: string; name?: string }) {
 
 function insertAccount() {
   return Effect.acquireRelease(
-    Effect.sync(() => {
-      Database.Client()
-        .$client.prepare(
-          "INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          "account-test",
-          "test@example.com",
-          "https://console.example.com",
-          "access",
-          "refresh",
-          Date.now(),
-          Date.now(),
-        )
+    Effect.promise(async () => {
+      await Database.Client().$client.query(
+        "INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        ["account-test", "test@example.com", "https://console.example.com", "access", "refresh", Date.now(), Date.now()],
+      )
       return "account-test"
     }),
     (id) =>
-      Effect.sync(() => {
-        Database.Client().$client.prepare("DELETE FROM account WHERE id = ?").run(id)
-      }),
+      Effect.promise(() => Database.Client().$client.query("DELETE FROM account WHERE id = $1", [id]).then(() => undefined)),
   )
 }
 
 function setSessionUpdated(session: Session.Info, updated: number) {
-  return Effect.sync(() => {
-    Database.use((db) =>
-      db.update(SessionTable).set({ time_updated: updated }).where(eq(SessionTable.id, session.id)).run(),
-    )
-  })
+  return Effect.promise(() =>
+    Database.use((db) => db.update(SessionTable).set({ time_updated: updated }).where(eq(SessionTable.id, session.id))),
+  )
 }
 
 function withCreatedWorktree(directory: string, use: (info: Worktree.Info) => Effect.Effect<void, unknown, never>) {

@@ -155,8 +155,8 @@ export const layer: Layer.Layer<
       Effect.catch(() => Effect.succeed({ code: 1, text: "", stderr: "" } satisfies GitResult)),
     )
 
-    const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-      Effect.sync(() => Database.use(fn))
+    const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T | Promise<T>) =>
+      Effect.promise(() => Database.use(fn))
 
     const emitUpdated = (data: Info) =>
       Effect.sync(() =>
@@ -271,7 +271,7 @@ export const layer: Layer.Layer<
       })
 
       // Phase 2: upsert
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
+      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).then((rows) => rows[0]))
       const existing = row
         ? fromRow(row)
         : {
@@ -333,8 +333,7 @@ export const layer: Layer.Layer<
               sandboxes: result.sandboxes,
               commands: result.commands,
             },
-          })
-          .run(),
+          }),
       )
 
       if (data.id !== ProjectID.global) {
@@ -342,8 +341,7 @@ export const layer: Layer.Layer<
           d
             .update(SessionTable)
             .set({ project_id: data.id })
-            .where(and(eq(SessionTable.project_id, ProjectID.global), eq(SessionTable.directory, data.worktree)))
-            .run(),
+            .where(and(eq(SessionTable.project_id, ProjectID.global), eq(SessionTable.directory, data.worktree))),
         )
       }
 
@@ -374,11 +372,11 @@ export const layer: Layer.Layer<
     })
 
     const list = Effect.fn("Project.list")(function* () {
-      return yield* db((d) => d.select().from(ProjectTable).all().map(fromRow))
+      return (yield* db((d) => d.select().from(ProjectTable))).map(fromRow)
     })
 
     const get = Effect.fn("Project.get")(function* (id: ProjectID) {
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).then((rows) => rows[0]))
       return row ? fromRow(row) : undefined
     })
 
@@ -396,7 +394,7 @@ export const layer: Layer.Layer<
           })
           .where(eq(ProjectTable.id, input.projectID))
           .returning()
-          .get(),
+          .then((rows) => rows[0]),
       )
       if (!result) throw new Error(`Project not found: ${input.projectID}`)
       const data = fromRow(result)
@@ -416,9 +414,7 @@ export const layer: Layer.Layer<
     })
 
     const setInitialized = Effect.fn("Project.setInitialized")(function* (id: ProjectID) {
-      yield* db((d) =>
-        d.update(ProjectTable).set({ time_initialized: Date.now() }).where(eq(ProjectTable.id, id)).run(),
-      )
+      yield* db((d) => d.update(ProjectTable).set({ time_initialized: Date.now() }).where(eq(ProjectTable.id, id)))
     })
 
     const initState = yield* InstanceState.make(
@@ -437,7 +433,7 @@ export const layer: Layer.Layer<
     })
 
     const sandboxes = Effect.fn("Project.sandboxes")(function* (id: ProjectID) {
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).then((rows) => rows[0]))
       if (!row) return []
       const data = fromRow(row)
       return yield* Effect.forEach(
@@ -452,7 +448,7 @@ export const layer: Layer.Layer<
     })
 
     const addSandbox = Effect.fn("Project.addSandbox")(function* (id: ProjectID, directory: string) {
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).then((rows) => rows[0]))
       if (!row) throw new Error(`Project not found: ${id}`)
       const sboxes = [...row.sandboxes]
       if (!sboxes.includes(directory)) sboxes.push(directory)
@@ -462,14 +458,14 @@ export const layer: Layer.Layer<
           .set({ sandboxes: sboxes, time_updated: Date.now() })
           .where(eq(ProjectTable.id, id))
           .returning()
-          .get(),
+          .then((rows) => rows[0]),
       )
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))
     })
 
     const removeSandbox = Effect.fn("Project.removeSandbox")(function* (id: ProjectID, directory: string) {
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).then((rows) => rows[0]))
       if (!row) throw new Error(`Project not found: ${id}`)
       const sboxes = row.sandboxes.filter((s) => s !== directory)
       const result = yield* db((d) =>
@@ -478,7 +474,7 @@ export const layer: Layer.Layer<
           .set({ sandboxes: sboxes, time_updated: Date.now() })
           .where(eq(ProjectTable.id, id))
           .returning()
-          .get(),
+          .then((rows) => rows[0]),
       )
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))
@@ -509,26 +505,18 @@ export const defaultLayer = layer.pipe(
 
 export const use = serviceUse(Service)
 
-export function list() {
-  return Database.use((db) =>
-    db
-      .select()
-      .from(ProjectTable)
-      .all()
-      .map((row) => fromRow(row)),
-  )
+export async function list() {
+  return (await Database.use((db) => db.select().from(ProjectTable))).map((row) => fromRow(row))
 }
 
-export function get(id: ProjectID): Info | undefined {
-  const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+export async function get(id: ProjectID): Promise<Info | undefined> {
+  const row = await Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).then((rows) => rows[0]))
   if (!row) return undefined
   return fromRow(row)
 }
 
 export function setInitialized(id: ProjectID) {
-  Database.use((db) =>
-    db.update(ProjectTable).set({ time_initialized: Date.now() }).where(eq(ProjectTable.id, id)).run(),
-  )
+  return Database.use((db) => db.update(ProjectTable).set({ time_initialized: Date.now() }).where(eq(ProjectTable.id, id)))
 }
 
 export * as Project from "./project"

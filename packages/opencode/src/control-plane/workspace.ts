@@ -73,8 +73,8 @@ function fromRow(row: typeof WorkspaceTable.$inferSelect): Info {
   }
 }
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T | Promise<T>) =>
+  Effect.promise(() => Database.use(fn))
 
 const log = Log.create({ service: "workspace-sync" })
 
@@ -334,13 +334,12 @@ export const layer = Layer.effect(
           .select({ id: SessionTable.id })
           .from(SessionTable)
           .where(eq(SessionTable.workspace_id, space.id))
-          .all()
-          .map((row) => row.id),
+          .then((rows) => rows.map((row) => row.id)),
       )
       const state = sessionIDs.length
         ? Object.fromEntries(
             (yield* db((db) =>
-              db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, sessionIDs)).all(),
+              db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, sessionIDs)),
             )).map((row) => [row.aggregate_id, row.seq]),
           )
         : {}
@@ -558,7 +557,7 @@ export const layer = Layer.effect(
         timeUsed: Date.now(),
       }
 
-      yield* db((db) => {
+      yield* db((db) =>
         db.insert(WorkspaceTable)
           .values({
             id: info.id,
@@ -569,9 +568,8 @@ export const layer = Layer.effect(
             extra: info.extra,
             project_id: info.projectID,
             time_used: info.timeUsed,
-          })
-          .run()
-      })
+          }),
+      )
 
       const env = {
         OPENCODE_AUTH_CONTENT: JSON.stringify(yield* auth.all()),
@@ -615,7 +613,7 @@ export const layer = Layer.effect(
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, input.sessionID))
-            .get(),
+            .then((rows) => rows[0]),
         )
 
         if (current?.workspaceID) {
@@ -730,8 +728,7 @@ export const layer = Layer.effect(
             })
             .from(EventTable)
             .where(eq(EventTable.aggregate_id, input.sessionID))
-            .orderBy(asc(EventTable.seq))
-            .all(),
+            .orderBy(asc(EventTable.seq)),
         )
         if (rows.length === 0)
           return yield* new SessionEventsNotFoundError({
@@ -843,9 +840,7 @@ export const layer = Layer.effect(
           .select()
           .from(WorkspaceTable)
           .where(eq(WorkspaceTable.project_id, project.id))
-          .all()
-          .map(fromRow)
-          .sort((a, b) => a.id.localeCompare(b.id)),
+          .then((rows) => rows.map(fromRow).sort((a, b) => a.id.localeCompare(b.id))),
       )
     })
 
@@ -885,7 +880,7 @@ export const layer = Layer.effect(
               timeUsed: Date.now(),
             }
 
-            yield* db((db) => {
+            yield* db((db) =>
               db.insert(WorkspaceTable)
                 .values({
                   id: info.id,
@@ -896,9 +891,8 @@ export const layer = Layer.effect(
                   extra: info.extra,
                   project_id: info.projectID,
                   time_used: info.timeUsed,
-                })
-                .run()
-            })
+                }),
+            )
 
             yield* startSync(info)
           }),
@@ -907,7 +901,7 @@ export const layer = Layer.effect(
     })
 
     const get = Effect.fn("Workspace.get")(function* (id: WorkspaceID) {
-      const row = yield* db((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+      const row = yield* db((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).then((rows) => rows[0]))
       if (!row) return
       return fromRow(row)
     })
@@ -917,8 +911,7 @@ export const layer = Layer.effect(
         db
           .select({ id: SessionTable.id, parentID: SessionTable.parent_id })
           .from(SessionTable)
-          .where(eq(SessionTable.workspace_id, id))
-          .all(),
+          .where(eq(SessionTable.workspace_id, id)),
       )
       const sessionIDs = new Set(sessions.map((sessionInfo) => sessionInfo.id))
       yield* Effect.forEach(
@@ -928,7 +921,7 @@ export const layer = Layer.effect(
         { discard: true },
       )
 
-      const row = yield* db((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+      const row = yield* db((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).then((rows) => rows[0]))
       if (!row) return
 
       yield* stopSync(id)
@@ -945,7 +938,7 @@ export const layer = Layer.effect(
           }),
       )
 
-      yield* db((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run())
+      yield* db((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)))
       return info
     })
 
@@ -963,7 +956,7 @@ export const layer = Layer.effect(
       state: Record<string, number>,
       signal?: AbortSignal,
     ) {
-      if (synced(state)) return
+      if (yield* Effect.promise(() => synced(state))) return
 
       yield* Effect.catch(
         waitEvent({
@@ -998,8 +991,7 @@ export const layer = Layer.effect(
         db
           .selectDistinct({ workspace: WorkspaceTable })
           .from(WorkspaceTable)
-          .where(eq(WorkspaceTable.project_id, projectID))
-          .all(),
+          .where(eq(WorkspaceTable.project_id, projectID)),
       )
 
       for (const { workspace } of rows) {
@@ -1054,21 +1046,20 @@ type HistoryEvent = {
   data: Record<string, unknown>
 }
 
-function synced(state: Record<string, number>) {
+async function synced(state: Record<string, number>) {
   const ids = Object.keys(state)
   if (ids.length === 0) return true
 
   const done = Object.fromEntries(
-    Database.use((db) =>
+    (await Database.use((db) =>
       db
         .select({
           id: EventSequenceTable.aggregate_id,
           seq: EventSequenceTable.seq,
         })
         .from(EventSequenceTable)
-        .where(inArray(EventSequenceTable.aggregate_id, ids))
-        .all(),
-    ).map((row) => [row.id, row.seq]),
+        .where(inArray(EventSequenceTable.aggregate_id, ids)),
+    )).map((row) => [row.id, row.seq]),
   ) as Record<string, number>
 
   return ids.every((id) => {

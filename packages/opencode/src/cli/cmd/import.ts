@@ -170,19 +170,21 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
     projectID,
   }) as Session.Info
   const row = Session.toRow(info)
-  Database.use((db) =>
-    db
+  yield* Effect.promise(() =>
+    Database.use((db) =>
+      db
       .insert(SessionTable)
       .values(row)
-      .onConflictDoUpdate({ target: SessionTable.id, set: { project_id: row.project_id } })
-      .run(),
+      .onConflictDoUpdate({ target: SessionTable.id, set: { project_id: row.project_id } }),
+    ),
   )
 
   for (const msg of exportData.messages) {
     const msgInfo = decodeMessageInfo(msg.info) as MessageV2.Info
     const { id, sessionID: _, ...msgData } = msgInfo
-    Database.use((db) =>
-      db
+    yield* Effect.promise(() =>
+      Database.use((db) =>
+        db
         .insert(MessageTable)
         .values({
           id,
@@ -190,15 +192,16 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
           time_created: msgInfo.time?.created ?? Date.now(),
           data: msgData,
         })
-        .onConflictDoNothing()
-        .run(),
+        .onConflictDoNothing(),
+      ),
     )
 
     for (const part of msg.parts) {
       const partInfo = decodePart(part) as MessageV2.Part
       const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
-      Database.use((db) =>
-        db
+      yield* Effect.promise(() =>
+        Database.use((db) =>
+          db
           .insert(PartTable)
           .values({
             id: partId,
@@ -206,8 +209,8 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
             session_id: row.id,
             data: partData,
           })
-          .onConflictDoNothing()
-          .run(),
+          .onConflictDoNothing(),
+        ),
       )
     }
   }

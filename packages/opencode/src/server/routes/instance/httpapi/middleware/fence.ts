@@ -10,9 +10,9 @@ export const fenceLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
     const request = yield* HttpServerRequest.HttpServerRequest
     if (!Flag.OPENCODE_WORKSPACE_ID || ignoredMethods.has(request.method)) return yield* effect
 
-    const previous = Fence.load()
+    const previous = yield* Effect.promise(() => Fence.load())
     const response = yield* effect
-    const current = Fence.diff(previous, Fence.load())
+    const current = Fence.diff(previous, yield* Effect.promise(() => Fence.load()))
     if (Object.keys(current).length === 0) return response
 
     return HttpServerResponse.setHeader(response, Fence.HEADER, JSON.stringify(current))

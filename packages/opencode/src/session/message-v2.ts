@@ -595,17 +595,16 @@ const part = (row: typeof PartTable.$inferSelect) =>
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
-function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
+async function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
   const partByMessage = new Map<string, Part[]>()
   if (ids.length > 0) {
-    const partRows = Database.use((db) =>
+    const partRows = await Database.use((db) =>
       db
         .select()
         .from(PartTable)
         .where(inArray(PartTable.message_id, ids))
-        .orderBy(PartTable.message_id, PartTable.id)
-        .all(),
+        .orderBy(PartTable.message_id, PartTable.id),
     )
     for (const row of partRows) {
       const next = part(row)
@@ -928,20 +927,21 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
     : eq(MessageTable.session_id, input.sessionID)
-  const rows = Database.use((db) =>
-    db
-      .select()
-      .from(MessageTable)
-      .where(where)
-      .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
-      .limit(input.limit + 1)
-      .all(),
+  const rows = yield* Effect.promise(() =>
+    Database.use((db) =>
+      db
+        .select()
+        .from(MessageTable)
+        .where(where)
+        .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+        .limit(input.limit + 1),
+    ),
   )
   if (rows.length === 0) {
-    const row = Database.use((db) =>
-      db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get(),
+    const row = yield* Effect.promise(() =>
+      Database.use((db) => db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID))),
     )
-    if (!row) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+    if (!row[0]) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
     return {
       items: [] as WithParts[],
       more: false,
@@ -950,7 +950,7 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
 
   const more = rows.length > input.limit
   const slice = more ? rows.slice(0, input.limit) : rows
-  const items = hydrate(slice)
+  const items = yield* Effect.promise(() => hydrate(slice))
   items.reverse()
   const tail = slice.at(-1)
   return {
@@ -960,11 +960,11 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   }
 })
 
-export function* stream(sessionID: SessionID) {
+export async function* stream(sessionID: SessionID) {
   const size = 50
   let before: string | undefined
   while (true) {
-    const next = Effect.runSync(
+    const next = await Effect.runPromise(
       page({ sessionID, limit: size, before }).pipe(
         Effect.catchIf(NotFoundError.isInstance, () =>
           Effect.succeed({ items: [] as WithParts[], more: false, cursor: undefined }),
@@ -980,9 +980,9 @@ export function* stream(sessionID: SessionID) {
   }
 }
 
-export function parts(message_id: MessageID) {
-  const rows = Database.use((db) =>
-    db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
+export async function parts(message_id: MessageID) {
+  const rows = await Database.use((db) =>
+    db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id),
   )
   return rows.map(
     (row) =>
@@ -996,17 +996,15 @@ export function parts(message_id: MessageID) {
 }
 
 export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: SessionID; messageID: MessageID }) {
-  const row = Database.use((db) =>
-    db
-      .select()
-      .from(MessageTable)
-      .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
-      .get(),
+  const row = yield* Effect.promise(() =>
+    Database.use((db) =>
+      db.select().from(MessageTable).where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID))),
+    ),
   )
-  if (!row) return yield* new NotFoundError({ message: `Message not found: ${input.messageID}` })
+  if (!row[0]) return yield* new NotFoundError({ message: `Message not found: ${input.messageID}` })
   return {
-    info: info(row),
-    parts: parts(input.messageID),
+    info: info(row[0]),
+    parts: yield* Effect.promise(() => parts(input.messageID)),
   }
 })
 
@@ -1064,7 +1062,7 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(stream(sessionID))
+  return filterCompacted(yield* Effect.promise(() => Array.fromAsync(stream(sessionID))))
 })
 
 export function fromError(

@@ -66,7 +66,7 @@ describe("SyncEvent", () => {
         Effect.gen(function* () {
           const { Created } = setup()
           yield* SyncEvent.use.run(Created, { id: "evt_1", name: "first" })
-          const rows = Database.use((db) => db.select().from(EventTable).all())
+          const rows = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
           expect(rows).toHaveLength(1)
           expect(rows[0].type).toBe("item.created.1")
           expect(rows[0].aggregate_id).toBe("evt_1")
@@ -81,7 +81,7 @@ describe("SyncEvent", () => {
           const { Created } = setup()
           yield* SyncEvent.use.run(Created, { id: "evt_1", name: "first" })
           yield* SyncEvent.use.run(Created, { id: "evt_1", name: "second" })
-          const rows = Database.use((db) => db.select().from(EventTable).all())
+          const rows = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
           expect(rows).toHaveLength(2)
           expect(rows[1].seq).toBe(rows[0].seq + 1)
         }),
@@ -94,7 +94,7 @@ describe("SyncEvent", () => {
         Effect.gen(function* () {
           const { Sent } = setup()
           yield* SyncEvent.use.run(Sent, { item_id: "evt_1", to: "james" })
-          const rows = Database.use((db) => db.select().from(EventTable).all())
+          const rows = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
           expect(rows).toHaveLength(1)
           expect(rows[0].aggregate_id).toBe("evt_1")
         }),
@@ -150,7 +150,7 @@ describe("SyncEvent", () => {
             aggregateID: id,
             data: { id, name: "replayed" },
           })
-          const rows = Database.use((db) => db.select().from(EventTable).all())
+          const rows = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
           expect(rows).toHaveLength(1)
           expect(rows[0].aggregate_id).toBe(id)
         }),
@@ -245,7 +245,7 @@ describe("SyncEvent", () => {
           expect(one).toBe(id)
           expect(two).toBe(id)
 
-          const rows = Database.use((db) => db.select().from(EventTable).all())
+          const rows = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
           expect(rows.map((row) => row.seq)).toEqual([0, 1, 2, 3])
         }),
       ),
@@ -269,11 +269,13 @@ describe("SyncEvent", () => {
             { publish: false, ownerID: "owner-1" },
           )
 
-          const row = Database.use((db) =>
-            db
-              .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
-              .from(EventSequenceTable)
-              .get(),
+          const row = yield* Effect.promise(() =>
+            Database.use((db) =>
+              db
+                .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                .from(EventSequenceTable)
+                .then((rows) => rows[0]),
+            ),
           )
           expect(row).toEqual({ seq: 0, ownerID: "owner-1" })
         }),
@@ -308,12 +310,14 @@ describe("SyncEvent", () => {
             { publish: false, ownerID: "owner-2" },
           )
 
-          const events = Database.use((db) => db.select().from(EventTable).all())
-          const sequence = Database.use((db) =>
-            db
-              .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
-              .from(EventSequenceTable)
-              .get(),
+          const events = yield* Effect.promise(() => Database.use((db) => db.select().from(EventTable)))
+          const sequence = yield* Effect.promise(() =>
+            Database.use((db) =>
+              db
+                .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                .from(EventSequenceTable)
+                .then((rows) => rows[0]),
+            ),
           )
           expect(events).toHaveLength(1)
           expect(events[0].id).toBe("evt_1")
@@ -333,12 +337,14 @@ describe("SyncEvent", () => {
           yield* SyncEvent.use.claim(id, "owner-1")
           yield* SyncEvent.use.claim(id, "owner-2")
 
-          const row = Database.use((db) =>
-            db
-              .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
-              .from(EventSequenceTable)
-              .where(eq(EventSequenceTable.aggregate_id, id))
-              .get(),
+          const row = yield* Effect.promise(() =>
+            Database.use((db) =>
+              db
+                .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                .from(EventSequenceTable)
+                .where(eq(EventSequenceTable.aggregate_id, id))
+                .then((rows) => rows[0]),
+            ),
           )
           expect(row).toEqual({ seq: 0, ownerID: "owner-2" })
         }),

@@ -147,14 +147,14 @@ describe("session.list", () => {
           provideInstance(path.join(test.directory, "packages", "app")),
         )
 
-        yield* Effect.sync(() =>
+        yield* Effect.promise(() =>
           Database.use((db) =>
-            db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, current.id)).run(),
+            db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, current.id)),
           ),
         )
-        yield* Effect.sync(() =>
+        yield* Effect.promise(() =>
           Database.use((db) =>
-            db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sibling.id)).run(),
+            db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sibling.id)),
           ),
         )
 

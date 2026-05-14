@@ -46,8 +46,9 @@ function seedNegativeTokenSession() {
 
     // Bypass the schema with a direct SQL update to install the
     // negative `output` value we want to test loading.
-    Database.use((db) =>
-      db
+    yield* Effect.promise(() =>
+      Database.use((db) =>
+        db
         .update(PartTable)
         .set({
           data: {
@@ -57,8 +58,8 @@ function seedNegativeTokenSession() {
             tokens: { input: 0, output: -42, reasoning: 0, cache: { read: 0, write: 0 } },
           } as never,
         })
-        .where(eq(PartTable.id, partID))
-        .run(),
+        .where(eq(PartTable.id, partID)),
+      ),
     )
 
     return info.id
