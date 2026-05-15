@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import * as fs from "fs/promises"
 import { ChildProcess } from "effect/unstable/process"
-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcessSpawner, ExitCode } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SandboxSpawner } from "@/sandbox/spawner"
@@ -55,7 +55,7 @@ describe("SandboxSpawner", () => {
       Effect.gen(function* () {
         const spawner = yield* ChildProcessSpawner
         const code = yield* spawner.exitCode(ChildProcess.make("exit 42", [], { shell: true }))
-        expect(code).toBe(42)
+        expect(code).toBe(ExitCode(42))
       }),
     ),
   )

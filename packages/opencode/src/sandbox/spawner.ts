@@ -58,7 +58,7 @@ function describe(command: ChildProcess.Command): string {
   return `${describe(command.left)} | ${describe(command.right)}`
 }
 
-function sandboxConfig(directory: string): Partial<SandboxRuntimeConfig> {
+function sandboxConfig(directory: string): SandboxRuntimeConfig {
   return {
     filesystem: {
       // Deny all sensitive directories by default (read is blacklist-based).
