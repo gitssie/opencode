@@ -34,7 +34,6 @@ import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "../file/ripgrep"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
@@ -50,6 +49,8 @@ import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { Reference } from "@/reference/reference"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { SandboxFs } from "@/sandbox/fs"
+import { SandboxSpawner } from "@/sandbox/spawner"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -371,11 +372,11 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Reference.defaultLayer),
     Layer.provide(LSP.defaultLayer),
     Layer.provide(Instruction.defaultLayer),
-    Layer.provide(AppFileSystem.defaultLayer),
+    Layer.provide(SandboxFs.layer),
     Layer.provide(Bus.layer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(Format.defaultLayer),
-    Layer.provide(CrossSpawnSpawner.defaultLayer),
+    Layer.provide(SandboxSpawner.layer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
