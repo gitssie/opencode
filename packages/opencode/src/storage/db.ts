@@ -3,11 +3,14 @@ export * from "drizzle-orm"
 import { LocalContext } from "@/util/local-context"
 import { lazy } from "../util/lazy"
 import * as Log from "@opencode-ai/core/util/log"
+import { Global } from "@opencode-ai/core/global"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { InstanceState } from "@/effect/instance-state"
 import { init } from "#db"
 import { Schema } from "effect"
+import path from "path"
+import { readFileSync, existsSync } from "fs"
 
 export const NotFoundError = NamedError.create("NotFoundError", {
   message: Schema.String,
@@ -15,18 +18,30 @@ export const NotFoundError = NamedError.create("NotFoundError", {
 
 const log = Log.create({ service: "db" })
 
-export const Path = (() => {
+export const Path = lazy(() => {
   if (Flag.OPENCODE_DB) return Flag.OPENCODE_DB
-  return process.env.OPENCODE_DB_URL ?? "postgres://localhost/opencode"
-})()
+  if (process.env.OPENCODE_DB_URL) return process.env.OPENCODE_DB_URL
+
+  const configFile = path.join(Global.Path.data, "db.json")
+  if (existsSync(configFile)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configFile, "utf-8"))
+      if (typeof parsed?.url === "string") return parsed.url
+    } catch {
+      log.warn("failed to parse db.json config file", { path: configFile })
+    }
+  }
+
+  throw new Error("OPENCODE_DB_URL is not configured")
+})
 
 export type Transaction = NodePgTransaction<Record<string, never>, any, any>
 
 type Client = NodePgDatabase
 
 export const Client = lazy(() => {
-  log.info("opening database", { url: Path })
-  return init(Path)
+  log.info("opening database", { url: Path() })
+  return init(Path())
 })
 
 export async function close() {

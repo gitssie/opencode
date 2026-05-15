@@ -53,11 +53,11 @@ const PathCommand = cmd({
   describe: "print the database connection URL (redacted)",
   handler: () => {
     try {
-      const url = new URL(Database.Path)
+      const url = new URL(Database.Path())
       if (url.password) url.password = "***"
       console.log(url.toString())
     } catch {
-      console.log(Database.Path)
+      console.log(Database.Path())
     }
   },
 })
