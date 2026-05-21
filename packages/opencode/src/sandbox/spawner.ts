@@ -1,100 +1,90 @@
 import { Effect, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime"
 import { ChildProcess } from "effect/unstable/process"
-import { ChildProcessSpawner, make as makeSpawner, makeHandle } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcessSpawner, make as makeSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { InstanceState } from "@/effect/instance-state"
+import fs from "fs"
+
+// The zerobox binary path is resolved from ZEROBOX_BIN env var, then the
+// well-known system install location. No npm package fallback — the binary
+// must be pre-installed in the environment (e.g. via Dockerfile or local install).
+const CANDIDATE_PATHS = [
+  process.env["ZEROBOX_BIN"],
+  "/usr/local/bin/zerobox",
+].filter(Boolean) as string[]
+
+function resolveZerobox(): string {
+  for (const p of CANDIDATE_PATHS) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK)
+      return p
+    } catch {}
+  }
+  throw new Error(
+    `zerobox binary not found. Install it at /usr/local/bin/zerobox or set ZEROBOX_BIN. ` +
+    `Download from https://github.com/afshinm/zerobox/releases`,
+  )
+}
 
 export const layer = Layer.effect(
   ChildProcessSpawner,
   Effect.gen(function* () {
     const real = yield* ChildProcessSpawner
 
-    // Per-instance state: initialize sandbox once per project directory.
-    const state = yield* InstanceState.make(
-      Effect.fn("SandboxSpawner.state")(function* (ctx) {
-        const config = sandboxConfig(ctx.directory)
-        yield* Effect.promise(() => SandboxManager.initialize(config))
-        yield* Effect.addFinalizer(() => Effect.promise(() => SandboxManager.reset()).pipe(Effect.ignore))
-        return { config, directory: ctx.directory }
-      }),
-    )
+    // Resolve zerobox binary path once per layer instantiation.
+    const zeroboxBin = yield* Effect.sync(() => resolveZerobox())
 
     return makeSpawner((command) =>
       Effect.gen(function* () {
-        const { config, directory } = yield* InstanceState.get(state)
-        const wrapped = yield* Effect.promise(() =>
-          SandboxManager.wrapWithSandbox(describe(command), undefined, config),
-        )
-        const handle = yield* real.spawn(
-          ChildProcess.make(wrapped, [], {
-            cwd: command._tag === "StandardCommand" ? (command.options.cwd ?? directory) : directory,
-            shell: true,
-            //stderr: "inherit",
+        if (command._tag !== "StandardCommand") return yield* real.spawn(command)
+
+        // Read directory per-invocation so it respects the current instance context.
+        const directory = yield* InstanceState.directory
+
+        // Always use the instance workspace as cwd — the sandbox already
+        // limits filesystem access to the workspace, so any other cwd would
+        // either be outside the sandbox or duplicate the sandbox boundary.
+        const cwd = directory
+        const flags = buildZeroboxFlags(directory, zeroboxBin)
+
+        // Shell commands: wrap in sh -c so the full shell command string is executed.
+        // Non-shell commands: pass binary + args directly.
+        const isShell = !!command.options.shell
+        const zeroboxArgs = isShell
+          ? [...flags, "--", "sh", "-c", command.command]
+          : [...flags, "--", command.command, ...command.args]
+
+        return yield* real.spawn(
+          ChildProcess.make(zeroboxBin, zeroboxArgs, {
+            cwd,
+            env: command.options.env,
+            stdin: command.options.stdin,
+            stdout: command.options.stdout,
+            detached: command.options.detached,
+            killSignal: command.options.killSignal,
           }),
         )
-        const cleanup = Effect.sync(() => SandboxManager.cleanupAfterCommand())
-        return makeHandle({
-          pid: handle.pid,
-          stdin: handle.stdin,
-          stdout: handle.stdout,
-          stderr: handle.stderr,
-          all: handle.all,
-          getInputFd: handle.getInputFd,
-          getOutputFd: handle.getOutputFd,
-          isRunning: handle.isRunning,
-          exitCode: handle.exitCode.pipe(Effect.onExit(() => cleanup)),
-          kill: (options) => handle.kill(options).pipe(Effect.onExit(() => cleanup)),
-          unref: handle.unref,
-        })
       }),
     )
   }),
 ).pipe(Layer.provide(CrossSpawnSpawner.defaultLayer))
 
-function describe(command: ChildProcess.Command): string {
-  if (command._tag === "StandardCommand" && command.options.shell) return command.command
-  if (command._tag === "StandardCommand") return shellQuote([command.command, ...command.args])
-  return `${describe(command.left)} | ${describe(command.right)}`
-}
-
-function sandboxConfig(directory: string): SandboxRuntimeConfig {
-  return {
-    filesystem: {
-      // Deny all sensitive directories by default (read is blacklist-based).
-      // allowRead re-opens the subset of system paths needed for tools to run.
-      denyRead: ["/root", "/home"],
-      allowRead: [
-        directory,
-        // Tool-chain paths required to execute shell commands
-        "/usr/bin",
-        "/usr/lib",
-        "/usr/lib64",
-        "/usr/local",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/etc/alternatives",
-        "/etc/ssl/certs",
-        "/etc/resolv.conf",
-        "/etc/hosts",
-        "/proc/self",
-        "/tmp",
-      ],
-      // Write is whitelist-based: only the project directory and temp space.
-      allowWrite: [directory, "/tmp"],
-      denyWrite: ["/etc", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/var", "/opt", "/root", "/home"],
-    },
-    network: {
-      allowedDomains: ["*"], // - Array of allowed domains (supports wildcards like *.example.com). Empty array = no
-      deniedDomains: [], // - Array of denied domains (checked first, takes precedence over allowedDomains)
-    },
-  }
-}
-
-function shellQuote(parts: ReadonlyArray<string>) {
-  return parts.map((part) => `'${part.replaceAll("'", `'"'"'`)}'`).join(" ")
+// When the binary is at a system path (not under /root), we can safely deny
+// /root and /home entirely. Otherwise fall back to denying only known
+// credential subdirectories to avoid blocking the binary itself.
+function buildZeroboxFlags(workspaceDir: string, zeroboxBin: string): string[] {
+  const canDenyRoot = !zeroboxBin.startsWith("/root")
+  const denyPaths = canDenyRoot
+    ? ["/root", "/home"]
+    : ["/root/.ssh", "/root/.gnupg", "/home"]
+  const deny = denyPaths.flatMap((p) => ["--deny-read", p])
+  return [
+    "--profile", "system-read-linux",
+    "--allow-read", workspaceDir,
+    "--allow-write", workspaceDir,
+    "--allow-net",
+    ...deny,
+  ]
 }
 
 export * as SandboxSpawner from "./spawner"

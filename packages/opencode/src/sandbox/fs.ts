@@ -2,9 +2,8 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Effect, Layer, Sink, Stream } from "effect"
 import * as PlatformError from "effect/PlatformError"
 import { Instance } from "@/project/instance"
+import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 import path from "path"
-
-const readSystemPaths = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/tmp", "/usr"]
 
 export const layer = Layer.effect(
   AppFileSystem.Service,
@@ -22,10 +21,12 @@ export const layer = Layer.effect(
           Effect.andThen(real.copy(fromPath, toPath, options)),
         ),
       copyFile: (fromPath, toPath) =>
-        Effect.all([checkAccess(fromPath, allowRead(), "copyFile"), checkAccess(toPath, allowWrite(), "copyFile")]).pipe(
-          Effect.andThen(real.copyFile(fromPath, toPath)),
-        ),
-      chmod: (target, mode) => checkAccess(target, allowWrite(), "chmod").pipe(Effect.andThen(real.chmod(target, mode))),
+        Effect.all([
+          checkAccess(fromPath, allowRead(), "copyFile"),
+          checkAccess(toPath, allowWrite(), "copyFile"),
+        ]).pipe(Effect.andThen(real.copyFile(fromPath, toPath))),
+      chmod: (target, mode) =>
+        checkAccess(target, allowWrite(), "chmod").pipe(Effect.andThen(real.chmod(target, mode))),
       chown: (target, uid, gid) =>
         checkAccess(target, allowWrite(), "chown").pipe(Effect.andThen(real.chown(target, uid, gid))),
       exists: (target) => (canAccess(target, allowRead()) ? real.exists(target) : Effect.succeed(false)),
@@ -44,7 +45,9 @@ export const layer = Layer.effect(
           Effect.andThen(real.makeTempDirectoryScoped(options)),
         ),
       makeTempFile: (options) =>
-        checkAccess(options?.directory ?? "/tmp", allowWrite(), "makeTempFile").pipe(Effect.andThen(real.makeTempFile(options))),
+        checkAccess(options?.directory ?? "/tmp", allowWrite(), "makeTempFile").pipe(
+          Effect.andThen(real.makeTempFile(options)),
+        ),
       makeTempFileScoped: (options) =>
         checkAccess(options?.directory ?? "/tmp", allowWrite(), "makeTempFileScoped").pipe(
           Effect.andThen(real.makeTempFileScoped(options)),
@@ -66,7 +69,8 @@ export const layer = Layer.effect(
         Effect.all([checkAccess(oldPath, allowWrite(), "rename"), checkAccess(newPath, allowWrite(), "rename")]).pipe(
           Effect.andThen(real.rename(oldPath, newPath)),
         ),
-      sink: (target, options) => (canAccess(target, allowWrite()) ? real.sink(target, options) : Sink.fail(deny(target, "sink"))),
+      sink: (target, options) =>
+        canAccess(target, allowWrite()) ? real.sink(target, options) : Sink.fail(deny(target, "sink")),
       stat: (target) => checkAccess(target, allowRead(), "stat").pipe(Effect.andThen(real.stat(target))),
       stream: (target, options) =>
         canAccess(target, allowRead()) ? real.stream(target, options) : Stream.fail(deny(target, "stream")),
@@ -82,7 +86,9 @@ export const layer = Layer.effect(
       writeFile: (target, data, options) =>
         checkAccess(target, allowWrite(), "writeFile").pipe(Effect.andThen(real.writeFile(target, data, options))),
       writeFileString: (target, data, options) =>
-        checkAccess(target, allowWrite(), "writeFileString").pipe(Effect.andThen(real.writeFileString(target, data, options))),
+        checkAccess(target, allowWrite(), "writeFileString").pipe(
+          Effect.andThen(real.writeFileString(target, data, options)),
+        ),
       isDir: (target) => (canAccess(target, allowRead()) ? real.isDir(target) : Effect.succeed(false)),
       isFile: (target) => (canAccess(target, allowRead()) ? real.isFile(target) : Effect.succeed(false)),
       existsSafe: (target) => (canAccess(target, allowRead()) ? real.existsSafe(target) : Effect.succeed(false)),
@@ -91,28 +97,35 @@ export const layer = Layer.effect(
       readJson: (target) => checkAccess(target, allowRead(), "readJson").pipe(Effect.andThen(real.readJson(target))),
       writeJson: (target, data, mode) =>
         checkAccess(target, allowWrite(), "writeJson").pipe(Effect.andThen(real.writeJson(target, data, mode))),
-      ensureDir: (target) => checkAccess(target, allowWrite(), "ensureDir").pipe(Effect.andThen(real.ensureDir(target))),
+      ensureDir: (target) =>
+        checkAccess(target, allowWrite(), "ensureDir").pipe(Effect.andThen(real.ensureDir(target))),
       writeWithDirs: (target, content, mode) =>
-        checkAccess(target, allowWrite(), "writeWithDirs").pipe(Effect.andThen(real.writeWithDirs(target, content, mode))),
+        checkAccess(target, allowWrite(), "writeWithDirs").pipe(
+          Effect.andThen(real.writeWithDirs(target, content, mode)),
+        ),
       readDirectoryEntries: (target) =>
-        checkAccess(target, allowRead(), "readDirectoryEntries").pipe(Effect.andThen(real.readDirectoryEntries(target))),
+        checkAccess(target, allowRead(), "readDirectoryEntries").pipe(
+          Effect.andThen(real.readDirectoryEntries(target)),
+        ),
       findUp: (target, start, stop) =>
         checkAccess(start, allowRead(), "findUp").pipe(Effect.andThen(real.findUp(target, start, stop))),
       up: (options) => checkAccess(options.start, allowRead(), "up").pipe(Effect.andThen(real.up(options))),
       globUp: (pattern, start, stop) =>
         checkAccess(start, allowRead(), "globUp").pipe(Effect.andThen(real.globUp(pattern, start, stop))),
       glob: (pattern, options) =>
-        checkAccess(options?.cwd ?? process.cwd(), allowRead(), "glob").pipe(Effect.andThen(real.glob(pattern, options))),
+        checkAccess(options?.cwd ?? process.cwd(), allowRead(), "glob").pipe(
+          Effect.andThen(real.glob(pattern, options)),
+        ),
     })
   }),
 ).pipe(Layer.provide(AppFileSystem.defaultLayer))
 
 function allowRead() {
-  return [Instance.directory, ...readSystemPaths]
+  return [Instance.directory, TRUNCATION_DIR, "/tmp"]
 }
 
 function allowWrite() {
-  return [Instance.directory]
+  return [Instance.directory, TRUNCATION_DIR, "/tmp"]
 }
 
 function checkAccess(target: string, allowList: ReadonlyArray<string>, method: string) {

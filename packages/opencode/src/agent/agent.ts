@@ -101,7 +101,9 @@ export const layer = Layer.effect(
           "*": "allow",
           doom_loop: "ask",
           external_directory: {
-            "*": "ask",
+            // In sandbox mode deny all external directory access by default so
+            // tools like glob cannot read outside the workspace.
+            "*": flags.sandbox ? "deny" : "ask",
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
           },
           question: "deny",

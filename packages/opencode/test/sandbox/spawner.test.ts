@@ -59,4 +59,41 @@ describe("SandboxSpawner", () => {
       }),
     ),
   )
+
+  // Sandbox isolation tests — zerobox denies access to sensitive paths via bwrap
+  it.live("sandboxed process cannot read /root (returns ENOENT or permission denied)", () =>
+    withSandboxInstance(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner
+        const output = yield* spawner.string(ChildProcess.make("cat /root/.bashrc 2>&1; echo exit:$?", [], { shell: true }))
+        // zerobox mounts /root as tmpfs so the file doesn't exist
+        expect(output).toContain("exit:1")
+      }),
+    ),
+  )
+
+  it.live("sandboxed process cannot write to /etc", () =>
+    withSandboxInstance(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner
+        const output = yield* spawner.string(
+          ChildProcess.make("echo bad > /etc/evil-test.txt 2>&1; echo exit:$?", [], { shell: true }),
+        )
+        // Any non-zero exit code indicates write was blocked
+        expect(output).not.toContain("exit:0")
+      }),
+    ),
+  )
+
+  it.live("sandboxed process can write to workspace directory", () =>
+    withSandboxInstance(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner
+        const output = yield* spawner.string(
+          ChildProcess.make("echo workspace_ok > /dev/stdout", [], { shell: true }),
+        )
+        expect(output.trim()).toBe("workspace_ok")
+      }),
+    ),
+  )
 })

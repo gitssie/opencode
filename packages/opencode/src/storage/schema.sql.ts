@@ -6,5 +6,6 @@ export const Timestamps = {
     .$default(() => Date.now()),
   time_updated: bigint({ mode: "number" })
     .notNull()
+    .$default(() => Date.now())
     .$onUpdate(() => Date.now()),
 }

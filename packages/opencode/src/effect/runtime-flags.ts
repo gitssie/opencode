@@ -25,6 +25,9 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   experimentalEventSystem: enabledByExperimental("OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"),
   experimentalWorkspaces: enabledByExperimental("OPENCODE_EXPERIMENTAL_WORKSPACES"),
   client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
+  // When true, the server runs in sandbox mode: external directory access is
+  // denied by default instead of asking the user for permission.
+  sandbox: bool("OPENCODE_SANDBOX"),
 }) {}
 
 export type Info = Context.Service.Shape<typeof Service>
