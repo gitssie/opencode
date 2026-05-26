@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "child_process"
-import { Process } from "@/util/process"
+import * as Process from "../util/process"
 
 type Child = Process.Child & ChildProcessWithoutNullStreams
 

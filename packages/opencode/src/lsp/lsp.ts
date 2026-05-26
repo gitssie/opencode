@@ -6,15 +6,15 @@ import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
 import { LSPServer } from "./server"
 import z from "zod"
-import { Config } from "@/config/config"
+import { Config } from "../config/config"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Process } from "@/util/process"
+import * as Process from "../util/process"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
-import { InstanceState } from "@/effect/instance-state"
+import * as InstanceState from "@/effect/instance-state"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import * as Index from "./symbols"
-import { NonNegativeInt, withStatics } from "@/util/schema"
+import { withStatics } from "@/util/schema"
 import { zod, ZodOverride } from "@/util/effect-zod"
 
 const log = Log.create({ service: "lsp" })
@@ -32,8 +32,8 @@ export const Event = {
 }
 
 const Position = Schema.Struct({
-  line: NonNegativeInt,
-  character: NonNegativeInt,
+  line: Schema.Number,
+  character: Schema.Number,
 })
 
 export const Range = Schema.Struct({
@@ -46,7 +46,7 @@ export type Range = typeof Range.Type
 
 export const Symbol = Schema.Struct({
   name: Schema.String,
-  kind: NonNegativeInt,
+  kind: Schema.Number,
   location: Schema.Struct({
     uri: Schema.String,
     range: Range,
@@ -59,7 +59,7 @@ export type Symbol = typeof Symbol.Type
 export const DocumentSymbol = Schema.Struct({
   name: Schema.String,
   detail: Schema.optional(Schema.String),
-  kind: NonNegativeInt,
+  kind: Schema.Number,
   range: Range,
   selectionRange: Range,
 })
@@ -156,7 +156,10 @@ export interface Interface {
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly openFile: (input: { path: string }) => Effect.Effect<void>
   readonly closeFile: (input: { path: string }) => Effect.Effect<void>
-  readonly touchFile: (input: string, waitForDiagnostics?: boolean | "full" | "incremental" | "document") => Effect.Effect<void>
+  readonly touchFile: (
+    input: string,
+    waitForDiagnostics?: boolean | "full" | "incremental" | "document",
+  ) => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
@@ -432,18 +435,9 @@ export const layer = Layer.effect(
       yield* Effect.promise(() =>
         Promise.all(
           clients.map(async (client) => {
-            const after = Date.now()
-            const version = await client.notify.open({ path: input })
-            if (!waitForDiagnostics) return
-            return client.waitForDiagnostics({
-              path: input,
-              version,
-              mode:
-                waitForDiagnostics === true || waitForDiagnostics === "incremental"
-                  ? undefined
-                  : waitForDiagnostics,
-              after,
-            })
+            const wait = waitForDiagnostics ? client.waitForDiagnostics({ path: input }) : Promise.resolve()
+            await client.notify.open({ path: input })
+            return wait
           }),
         ).catch((err) => {
           log.error("failed to touch file", { err, file: input })
@@ -671,9 +665,8 @@ export const layer = Layer.effect(
 
 export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer))
 
+export * as LSP from "./lsp"
 export * as Diagnostic from "./diagnostic"
 export const Format = {
   pretty: Index.Index.pretty,
 }
-
-export * as LSP from "./lsp"

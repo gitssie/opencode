@@ -8,14 +8,14 @@ import type {
   DocumentSymbol as VSCodeDocumentSymbol,
 } from "vscode-languageserver-types"
 import * as Log from "@opencode-ai/core/util/log"
-import { Process } from "@/util/process"
+import * as Process from "../util/process"
 import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
 import type { LSPServer } from "./server"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { withTimeout } from "../util/timeout"
-import { Filesystem } from "@/util/filesystem"
 import { Instance } from "../project/instance"
+import * as Filesystem from "../util/filesystem"
 import { Effect, Schema, Semaphore } from "effect"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150

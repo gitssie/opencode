@@ -1,11 +1,12 @@
-import { LSP } from "@/lsp/lsp"
+import { LSP } from "../../../lsp"
+import { AppRuntime } from "../../../effect/app-runtime"
 import { Effect } from "effect"
-import { effectCmd } from "../../effect-cmd"
+import { bootstrap } from "../../bootstrap"
 import { cmd } from "../cmd"
 import * as Log from "@opencode-ai/core/util/log"
 import { EOL } from "os"
 import { pathToFileURL } from "url"
-import type { LSPClient } from "@/lsp/client"
+import type { LSPClient } from "../../../lsp/client"
 import path from "path"
 
 export const LSPCommand = cmd({
@@ -22,57 +23,73 @@ export const LSPCommand = cmd({
   async handler() {},
 })
 
-const DiagnosticsCommand = effectCmd({
+const DiagnosticsCommand = cmd({
   command: "diagnostics <file>",
   describe: "get diagnostics for a file",
   builder: (yargs) => yargs.positional("file", { type: "string", demandOption: true }),
-  handler: Effect.fn("Cli.debug.lsp.diagnostics")(function* (args) {
-    const file = path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)
-    const out = yield* LSP.Service.use((lsp) =>
-      Effect.gen(function* () {
-        yield* lsp.touchFile(file, "full")
-        return yield* lsp.diagnostics()
-      }),
-    )
-    process.stdout.write(JSON.stringify(out, null, 2) + EOL)
-  }),
+  async handler(args) {
+    await bootstrap(process.cwd(), async () => {
+      const out = await AppRuntime.runPromise(
+        LSP.Service.use((lsp) =>
+          Effect.gen(function* () {
+            const file = path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)
+            yield* lsp.touchFile(file, "full")
+            yield* Effect.sleep(30000)
+            return yield* lsp.diagnostics()
+          }),
+        ),
+      )
+      process.stdout.write(JSON.stringify(out, null, 2) + EOL)
+    })
+  },
 })
 
-export const SymbolsCommand = effectCmd({
+export const SymbolsCommand = cmd({
   command: "symbols <query>",
   describe: "search workspace symbols",
   builder: (yargs) => yargs.positional("query", { type: "string", demandOption: true }),
-  handler: Effect.fn("Cli.debug.lsp.symbols")(function* (args) {
-    using _ = Log.Default.time("symbols")
-    const results = yield* LSP.Service.use((lsp) => lsp.workspaceSymbol(args.query))
-    process.stdout.write(JSON.stringify(results, null, 2) + EOL)
-  }),
+  async handler(args) {
+    await bootstrap(process.cwd(), async () => {
+      using _ = Log.Default.time("symbols")
+      const results = await AppRuntime.runPromise(LSP.Service.use((lsp) => lsp.workspaceSymbol(args.query)))
+      process.stdout.write(JSON.stringify(results, null, 2) + EOL)
+    })
+  },
 })
 
-export const DocumentSymbolsCommand = effectCmd({
+export const DocumentSymbolsCommand = cmd({
   command: "document-symbols <file>",
   describe: "get symbols from a document",
   builder: (yargs) => yargs.positional("file", { type: "string", demandOption: true }),
-  handler: Effect.fn("Cli.debug.lsp.documentSymbols")(function* (args) {
-    using _ = Log.Default.time("document-symbols")
-    const file = path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)
-    const results = yield* LSP.Service.use((lsp) => lsp.documentSymbol(pathToFileURL(file).href))
-    process.stdout.write(JSON.stringify(results, null, 2) + EOL)
-  }),
+  async handler(args) {
+    await bootstrap(process.cwd(), async () => {
+      using _ = Log.Default.time("document-symbols")
+      const results = await AppRuntime.runPromise(
+        LSP.Service.use((lsp) =>
+          lsp.documentSymbol(
+            pathToFileURL(path.isAbsolute(args.file) ? args.file : path.resolve(process.cwd(), args.file)).href,
+          ),
+        ),
+      )
+      process.stdout.write(JSON.stringify(results, null, 2) + EOL)
+    })
+  },
 })
 
-const BuildIndexCommand = effectCmd({
+const BuildIndexCommand = cmd({
   command: "build-index",
   describe: "rebuild symbol index for the workspace",
   builder: (yargs) => yargs,
-  handler: Effect.fn("Cli.debug.lsp.buildIndex")(function* () {
-    using _ = Log.Default.time("build-index")
-    yield* LSP.Service.use((lsp) => lsp.rebuildIndex(true))
-    process.stdout.write("Symbol index rebuilt successfully" + EOL)
-  }),
+  async handler() {
+    await bootstrap(process.cwd(), async () => {
+      using _ = Log.Default.time("build-index")
+      await AppRuntime.runPromise(LSP.Service.use((lsp) => lsp.rebuildIndex(true)))
+      process.stdout.write("Symbol index rebuilt successfully" + EOL)
+    })
+  },
 })
 
-const SearchSymbolsCommand = effectCmd({
+const SearchSymbolsCommand = cmd({
   command: "search-symbols <pattern>",
   describe: "search symbols in the index by name path regex",
   builder: (yargs) =>
@@ -82,26 +99,28 @@ const SearchSymbolsCommand = effectCmd({
       .option("include-body", { type: "boolean", default: false, describe: "include symbol body" })
       .option("include-kinds", { type: "array", describe: "symbol kinds to include" })
       .option("exclude-kinds", { type: "array", describe: "symbol kinds to exclude" }),
-  handler: Effect.fn("Cli.debug.lsp.searchSymbols")(function* (args) {
-    using _ = Log.Default.time("search-symbols")
-    const results = yield* LSP.Service.use((lsp) =>
-      lsp.searchSymbols({
-        namePathRegex: args.pattern,
-        relativePathRegex: args["search-in"],
-        includeBody: args["include-body"],
-        includeKinds: args["include-kinds"]?.map(Number),
-        excludeKinds: args["exclude-kinds"]?.map(Number),
-      }),
-    )
-    const prettyResults = yield* Effect.promise(() =>
-      LSP.Format.pretty(results as LSPClient.DocumentSymbol[], {
+  async handler(args) {
+    await bootstrap(process.cwd(), async () => {
+      using _ = Log.Default.time("search-symbols")
+      const results = await AppRuntime.runPromise(
+        LSP.Service.use((lsp) =>
+          lsp.searchSymbols({
+            namePathRegex: args.pattern,
+            relativePathRegex: args["search-in"],
+            includeBody: args["include-body"],
+            includeKinds: args["include-kinds"]?.map(Number),
+            excludeKinds: args["exclude-kinds"]?.map(Number),
+          }),
+        ),
+      )
+      const prettyResults = await LSP.Format.pretty(results as LSPClient.DocumentSymbol[], {
         kind: true,
         location: true,
         includeBody: args["include-body"],
         includeRelativePath: true,
         format: "xml",
-      }),
-    )
-    process.stdout.write(prettyResults + EOL)
-  }),
+      })
+      process.stdout.write(prettyResults + EOL)
+    })
+  },
 })

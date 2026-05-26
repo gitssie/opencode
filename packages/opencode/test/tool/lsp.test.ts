@@ -4,12 +4,12 @@ import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
-import { LSP } from "@/lsp/lsp"
+import { LSP } from "../../src/lsp"
 import { Permission } from "../../src/permission"
 import { Instance } from "../../src/project/instance"
 import { MessageID, SessionID } from "../../src/session/schema"
-import { Tool } from "@/tool/tool"
-import { Truncate } from "@/tool/truncate"
+import * as Tool from "../../src/tool/tool"
+import * as Truncate from "../../src/tool/truncate"
 import { LspTool } from "../../src/tool/lsp"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -29,8 +29,6 @@ const ctx = {
   ask: () => Effect.void,
 }
 
-const workspaceSymbolQueries: string[] = []
-
 const lsp = Layer.succeed(
   LSP.Service,
   LSP.Service.of({
@@ -46,11 +44,7 @@ const lsp = Layer.succeed(
     references: () => Effect.succeed([]),
     implementation: () => Effect.succeed([]),
     documentSymbol: () => Effect.succeed([]),
-    workspaceSymbol: (query) =>
-      Effect.sync(() => {
-        workspaceSymbolQueries.push(query)
-        return []
-      }),
+    workspaceSymbol: () => Effect.succeed([]),
     prepareCallHierarchy: () => Effect.succeed([]),
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
@@ -154,7 +148,6 @@ describe("tool.lsp", () => {
       provideTmpdirInstance(
         (dir) =>
           Effect.gen(function* () {
-            workspaceSymbolQueries.length = 0
             const file = path.join(dir, "test.ts")
             yield* put(file)
 
@@ -167,23 +160,6 @@ describe("tool.lsp", () => {
               operation: "workspaceSymbol",
             })
             expect(result.title).toBe("workspaceSymbol")
-          }),
-        { git: true },
-      ),
-    )
-
-    it.live("passes workspaceSymbol query to LSP", () =>
-      provideTmpdirInstance(
-        (dir) =>
-          Effect.gen(function* () {
-            workspaceSymbolQueries.length = 0
-            const file = path.join(dir, "test.ts")
-            yield* put(file)
-
-            yield* run({ operation: "workspaceSymbol", filePath: file, line: 3, character: 7, query: "TestSymbol" })
-            yield* run({ operation: "workspaceSymbol", filePath: file, line: 3, character: 7 })
-
-            expect(workspaceSymbolQueries).toEqual(["TestSymbol", ""])
           }),
         { git: true },
       ),
