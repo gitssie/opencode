@@ -16,7 +16,13 @@ const log = Log.create({ service: "session.projector" })
 function foreign(err: unknown) {
   if (typeof err !== "object" || err === null) return false
   if ("code" in err && err.code === "SQLITE_CONSTRAINT_FOREIGNKEY") return true
-  return "message" in err && typeof err.message === "string" && err.message.includes("FOREIGN KEY constraint failed")
+  // PostgreSQL foreign key violation (error code 23503), wrapped by DrizzleQueryError
+  if ("cause" in err && typeof err.cause === "object" && err.cause !== null && "code" in err.cause && (err.cause as any).code === "23503") return true
+  if ("message" in err && typeof err.message === "string") {
+    if (err.message.includes("FOREIGN KEY")) return true
+    if (err.message.includes("foreign key")) return true
+  }
+  return false
 }
 
 export type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> | null } : T
@@ -134,7 +140,11 @@ export default [
         })
         .onConflictDoUpdate({ target: MessageTable.id, set: { data: rest } })
     } catch (err) {
-      if (!foreign(err)) throw err
+      if (!foreign(err)) {
+        const cause = (err as any)?.cause
+        log.error("message update failed", { messageID: id, sessionID, error: (err as Error)?.message, pgCode: cause?.code, pgDetail: cause?.detail })
+        throw err
+      }
       log.warn("ignored late message update", { messageID: id, sessionID })
     }
   }),
@@ -188,7 +198,11 @@ export default [
       if (previous) await applyUsage(db, row.session_id, previous, -1)
       if (next) await applyUsage(db, sessionID, next)
     } catch (err) {
-      if (!foreign(err)) throw err
+      if (!foreign(err)) {
+        const cause = (err as any)?.cause
+        log.error("part update failed", { partID: id, messageID, sessionID, error: (err as Error)?.message, pgCode: cause?.code, pgDetail: cause?.detail })
+        throw err
+      }
       log.warn("ignored late part update", { partID: id, messageID, sessionID })
     }
   }),
