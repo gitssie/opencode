@@ -83,8 +83,8 @@ delete process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 delete process.env["OTEL_EXPORTER_OTLP_HEADERS"]
 delete process.env["OTEL_RESOURCE_ATTRIBUTES"]
 
-// Tests use PostgreSQL in this branch. Keep a caller-provided URL when present.
-process.env["OPENCODE_DB"] = process.env["OPENCODE_DB_URL"] ?? "postgres://localhost/opencode_test"
+// Use in-memory sqlite
+process.env["OPENCODE_DB"] = ":memory:"
 
 // Now safe to import from src/
 const { initProjectors } = await import("../src/server/projectors")

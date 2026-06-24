@@ -1,11 +1,10 @@
-import { bigint } from "drizzle-orm/pg-core"
+import { integer } from "drizzle-orm/sqlite-core"
 
 export const Timestamps = {
-  time_created: bigint({ mode: "number" })
+  time_created: integer()
     .notNull()
     .$default(() => Date.now()),
-  time_updated: bigint({ mode: "number" })
+  time_updated: integer()
     .notNull()
-    .$default(() => Date.now())
     .$onUpdate(() => Date.now()),
 }
