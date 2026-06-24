@@ -580,7 +580,7 @@ export const layer: Layer.Layer<
     })
 
     const get = Effect.fn("Session.get")(function* (id: SessionID) {
-      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
       return fromRow(row)
     })
@@ -613,7 +613,6 @@ export const layer: Layer.Layer<
       const rows = yield* query
         .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
         .limit(input?.limit ?? 100)
-        .all()
         .pipe(Effect.orDie)
       const ids = [...new Set(rows.map((row) => row.project_id))]
       const projects = new Map<string, ProjectInfo>()
@@ -622,7 +621,6 @@ export const layer: Layer.Layer<
           .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
           .from(ProjectTable)
           .where(inArray(ProjectTable.id, ids))
-          .all()
           .pipe(Effect.orDie)
         for (const item of items) {
           projects.set(item.id, {
@@ -640,7 +638,6 @@ export const layer: Layer.Layer<
         .select()
         .from(SessionTable)
         .where(and(eq(SessionTable.parent_id, parentID)))
-        .all()
         .pipe(Effect.orDie)
       return rows.map(fromRow)
     })
@@ -685,7 +682,7 @@ export const layer: Layer.Layer<
       }).pipe(Effect.withSpan("Session.updatePart"))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
-      const row = yield* db
+      const [row] = yield* db
         .select()
         .from(PartTable)
         .where(
@@ -695,7 +692,6 @@ export const layer: Layer.Layer<
             eq(PartTable.id, input.partID),
           ),
         )
-        .get()
         .pipe(Effect.orDie)
       if (!row) return
       return {
@@ -1037,7 +1033,6 @@ function listByProject(
     .where(and(...conditions))
     .orderBy(desc(SessionTable.time_updated))
     .limit(limit)
-    .all()
     .pipe(
       Effect.orDie,
       Effect.map((rows) => rows.map(fromRow)),
@@ -1084,7 +1079,7 @@ export function* listGlobal(input?: {
             .from(SessionTable)
             .where(and(...conditions))
         : db.select().from(SessionTable)
-    return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all().pipe(Effect.orDie)
+    return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).pipe(Effect.orDie)
   })
 
   const ids = [...new Set(rows.map((row) => row.project_id))]
@@ -1096,7 +1091,6 @@ export function* listGlobal(input?: {
         .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
         .from(ProjectTable)
         .where(inArray(ProjectTable.id, ids))
-        .all()
         .pipe(Effect.orDie),
     )
     for (const item of items) {

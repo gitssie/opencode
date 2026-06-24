@@ -2,12 +2,13 @@ import { describe, expect } from "bun:test"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { V2Schema } from "@opencode-ai/core/v2-schema"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -17,7 +18,8 @@ const locationLayer = Layer.succeed(
     location({ directory: AbsolutePath.make("project"), workspaceID: WorkspaceV2.ID.make("wrk_test") }),
   ),
 )
-const eventLayer = Layer.mergeAll(EventV2.defaultLayer, Database.defaultLayer)
+const databaseLayer = DatabaseTesting.layer
+const eventLayer = Layer.mergeAll(EventV2.layer.pipe(Layer.provide(databaseLayer)), databaseLayer)
 const it = testEffect(eventLayer.pipe(Layer.provideMerge(locationLayer)))
 const itWithoutLocation = testEffect(eventLayer)
 
@@ -212,10 +214,12 @@ describe("EventV2", () => {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
       const aggregateID = EventV2.ID.create()
-      yield* db.run("CREATE TABLE IF NOT EXISTS event_commit_probe (value text NOT NULL)")
-      yield* db.run("DELETE FROM event_commit_probe")
+      yield* db.execute(sql.raw("CREATE TABLE IF NOT EXISTS event_commit_probe (value text NOT NULL)"))
+      yield* db.execute(sql.raw("DELETE FROM event_commit_probe"))
       yield* events.project(SyncMessage, () =>
-        db.run("INSERT INTO event_commit_probe (value) VALUES ('projected')").pipe(Effect.orDie, Effect.asVoid),
+        db
+          .execute(sql.raw("INSERT INTO event_commit_probe (value) VALUES ('projected')"))
+          .pipe(Effect.orDie, Effect.asVoid),
       )
 
       const exit = yield* events
@@ -223,10 +227,10 @@ describe("EventV2", () => {
         .pipe(Effect.exit)
 
       expect(String(exit)).toContain("commit failed")
-      expect(yield* db.all("SELECT value FROM event_commit_probe")).toEqual([])
-      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+      expect(yield* db.execute(sql.raw("SELECT value FROM event_commit_probe"))).toEqual([])
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID))).toEqual([])
       expect(
-        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)),
       ).toEqual([])
     }),
   )
@@ -314,11 +318,10 @@ describe("EventV2", () => {
       yield* events.listen(() => Effect.interrupt)
 
       const exit = yield* events.publish(SyncMessage, { id: "interrupted", text: "hello" }).pipe(Effect.exit)
-      const committed = yield* db
+      const [committed] = yield* db
         .select({ id: EventTable.id })
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, "interrupted"))
-        .get()
         .pipe(Effect.orDie)
 
       expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBeTrue()
@@ -364,7 +367,6 @@ describe("EventV2", () => {
           .select({ id: EventTable.id })
           .from(EventTable)
           .where(eq(EventTable.id, event.id))
-          .get()
           .pipe(
             Effect.orDie,
             Effect.map((row) => synchronized.push(row !== undefined)),
@@ -389,7 +391,6 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
 
       expect(rows).toHaveLength(1)
@@ -410,7 +411,6 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
 
       expect(rows.map((row) => row.seq)).toEqual([0, 1])
@@ -465,7 +465,7 @@ describe("EventV2", () => {
       const readStarted = yield* Deferred.make<void>()
       const continueRead = yield* Deferred.make<void>()
       let pause = true
-      const database = Database.layerFromPath(":memory:")
+      const database = DatabaseTesting.layer
       const eventLayer = EventV2.layerWith({
         beforeAggregateRead: () =>
           pause
@@ -542,7 +542,6 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
 
       expect(rows).toHaveLength(1)
@@ -591,7 +590,6 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
 
       expect(rows).toHaveLength(1)
@@ -628,13 +626,11 @@ describe("EventV2", () => {
           .select()
           .from(EventTable)
           .where(eq(EventTable.aggregate_id, payloadAggregateID))
-          .all()
           .pipe(Effect.orDie)
-        const sequence = yield* db
+        const [sequence] = yield* db
           .select({ seq: EventSequenceTable.seq })
           .from(EventSequenceTable)
           .where(eq(EventSequenceTable.aggregate_id, payloadAggregateID))
-          .get()
           .pipe(Effect.orDie)
 
         expect(String(exit)).toContain("Aggregate mismatch")
@@ -777,7 +773,6 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
 
       expect(one).toBe(aggregateID)
@@ -849,11 +844,10 @@ describe("EventV2", () => {
       }
 
       yield* events.replay(replayed, { ownerID: "owner-a", strictOwner: true })
-      const row = yield* db
+      const [row] = yield* db
         .select({ ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
         .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-        .get()
         .pipe(Effect.orDie)
 
       expect(row?.ownerID).toBe("owner-a")
@@ -883,11 +877,10 @@ describe("EventV2", () => {
         },
         { ownerID: "owner-1" },
       )
-      const row = yield* db
+      const [row] = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
         .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-        .get()
         .pipe(Effect.orDie)
 
       expect(row).toEqual({ seq: 0, ownerID: "owner-1" })
@@ -925,13 +918,11 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
-      const sequence = yield* db
+      const [sequence] = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
         .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-        .get()
         .pipe(Effect.orDie)
 
       expect(rows.map((row) => row.seq)).toEqual([0, 1])
@@ -1075,13 +1066,11 @@ describe("EventV2", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, aggregateID))
-        .all()
         .pipe(Effect.orDie)
-      const sequence = yield* db
+      const [sequence] = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
         .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-        .get()
         .pipe(Effect.orDie)
 
       expect(rows).toHaveLength(1)
@@ -1099,11 +1088,10 @@ describe("EventV2", () => {
       yield* events.publish(SyncMessage, { id: aggregateID, text: "claimed" })
       yield* events.claim(aggregateID, "owner-1")
       yield* events.claim(aggregateID, "owner-2")
-      const row = yield* db
+      const [row] = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
         .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-        .get()
         .pipe(Effect.orDie)
 
       expect(row).toEqual({ seq: 0, ownerID: "owner-2" })

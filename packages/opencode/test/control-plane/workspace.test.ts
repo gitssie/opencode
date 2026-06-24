@@ -293,7 +293,6 @@ function insertWorkspace(info: Workspace.Info) {
         project_id: info.projectID,
         time_used: info.timeUsed,
       })
-      .run()
       .pipe(Effect.orDie),
   )
 }
@@ -311,7 +310,6 @@ function insertProject(id: ProjectV2.ID, worktree: string) {
         time_updated: Date.now(),
         sandboxes: [],
       })
-      .run()
       .pipe(Effect.orDie),
   )
 }
@@ -322,7 +320,6 @@ function attachSessionToWorkspace(sessionID: SessionID, workspaceID: WorkspaceV2
       .update(SessionTable)
       .set({ workspace_id: workspaceID })
       .where(eq(SessionTable.id, sessionID))
-      .run()
       .pipe(Effect.orDie),
   )
 }
@@ -333,10 +330,9 @@ function sessionSequence(sessionID: SessionID) {
       .select({ seq: EventSequenceTable.seq })
       .from(EventSequenceTable)
       .where(eq(EventSequenceTable.aggregate_id, sessionID))
-      .get()
       .pipe(
         Effect.orDie,
-        Effect.map((row) => row?.seq),
+        Effect.map((__rows) => __rows[0]?.seq),
       ),
   )
 }
@@ -347,10 +343,9 @@ function sessionSequenceOwner(sessionID: SessionID) {
       .select({ ownerID: EventSequenceTable.owner_id })
       .from(EventSequenceTable)
       .where(eq(EventSequenceTable.aggregate_id, sessionID))
-      .get()
       .pipe(
         Effect.orDie,
-        Effect.map((row) => row?.ownerID),
+        Effect.map((__rows) => __rows[0]?.ownerID),
       ),
   )
 }
@@ -794,7 +789,6 @@ describe("workspace CRUD", () => {
             .select({ id: SessionTable.id })
             .from(SessionTable)
             .where(eq(SessionTable.workspace_id, info.id))
-            .all()
             .pipe(Effect.orDie),
         ).toEqual([])
       })
@@ -857,8 +851,7 @@ describe("workspace CRUD", () => {
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get()
-            .pipe(Effect.orDie))?.workspaceID,
+            .pipe(Effect.orDie))[0]?.workspaceID,
         ).toBe(target.id)
         expect(yield* sessionSequenceOwner(session.id)).toBe(target.id)
       })
@@ -924,8 +917,7 @@ describe("workspace CRUD", () => {
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get()
-            .pipe(Effect.orDie))?.workspaceID,
+            .pipe(Effect.orDie))[0]?.workspaceID,
         ).toBeNull()
         expect(yield* sessionSequenceOwner(session.id)).toBe(instance.project.id)
       })
@@ -966,8 +958,7 @@ describe("workspace CRUD", () => {
             .select({ workspaceID: SessionTable.workspace_id })
             .from(SessionTable)
             .where(eq(SessionTable.id, session.id))
-            .get()
-            .pipe(Effect.orDie))?.workspaceID,
+            .pipe(Effect.orDie))[0]?.workspaceID,
         ).toBeNull()
         expect(yield* sessionSequenceOwner(session.id)).toBe(projectID)
         expect(yield* sessionSequenceOwner(session.id)).not.toBe(workspaceProjectID)
@@ -1588,7 +1579,7 @@ describe("workspace waitForSync", () => {
         const workspace = yield* Workspace.Service
         const sessionID = SessionID.descending("ses_wait_done")
         const { db } = yield* Database.Service
-        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 4 }).run().pipe(Effect.orDie)
+        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 4 }).pipe(Effect.orDie)
 
         expect(
           yield* workspace.waitForSync(WorkspaceV2.ID.ascending("wrk_wait_done"), { [sessionID]: 4 }),
@@ -1608,7 +1599,7 @@ describe("workspace waitForSync", () => {
         const workspaceID = WorkspaceV2.ID.ascending("wrk_wait_event")
         const sessionID = SessionID.descending("ses_wait_event")
         const { db } = yield* Database.Service
-        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 1 }).run().pipe(Effect.orDie)
+        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 1 }).pipe(Effect.orDie)
 
         yield* Effect.all(
           [
@@ -1619,7 +1610,6 @@ describe("workspace waitForSync", () => {
                 .update(EventSequenceTable)
                 .set({ seq: 2 })
                 .where(eq(EventSequenceTable.aggregate_id, sessionID))
-                .run()
                 .pipe(Effect.orDie)
               GlobalBus.emit("event", { workspace: workspaceID, payload: { type: "anything" } })
             }),
@@ -1638,7 +1628,7 @@ describe("workspace waitForSync", () => {
         const workspaceID = WorkspaceV2.ID.ascending("wrk_wait_sync_any")
         const sessionID = SessionID.descending("ses_wait_sync_any")
         const { db } = yield* Database.Service
-        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 0 }).run().pipe(Effect.orDie)
+        yield* db.insert(EventSequenceTable).values({ aggregate_id: sessionID, seq: 0 }).pipe(Effect.orDie)
 
         yield* Effect.all(
           [
@@ -1649,7 +1639,6 @@ describe("workspace waitForSync", () => {
                 .update(EventSequenceTable)
                 .set({ seq: 1 })
                 .where(eq(EventSequenceTable.aggregate_id, sessionID))
-                .run()
                 .pipe(Effect.orDie)
               GlobalBus.emit("event", {
                 workspace: WorkspaceV2.ID.ascending("wrk_other_workspace"),

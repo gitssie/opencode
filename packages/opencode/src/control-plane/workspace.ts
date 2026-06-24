@@ -329,7 +329,6 @@ export const layer = Layer.effect(
         .select({ id: SessionTable.id })
         .from(SessionTable)
         .where(eq(SessionTable.workspace_id, space.id))
-        .all()
         .pipe(Effect.orDie)).map((row) => row.id)
       const state = sessionIDs.length
         ? Object.fromEntries(
@@ -337,7 +336,6 @@ export const layer = Layer.effect(
               .select()
               .from(EventSequenceTable)
               .where(inArray(EventSequenceTable.aggregate_id, sessionIDs))
-              .all()
               .pipe(Effect.orDie)).map((row) => [row.aggregate_id, row.seq]),
           )
         : {}
@@ -539,7 +537,6 @@ export const layer = Layer.effect(
           project_id: info.projectID,
           time_used: info.timeUsed,
         })
-        .run()
         .pipe(Effect.orDie)
 
       const env = {
@@ -574,11 +571,10 @@ export const layer = Layer.effect(
 
     const sessionWarp = Effect.fn("Workspace.sessionWarp")(function* (input: SessionWarpInput) {
       return yield* Effect.gen(function* () {
-        const current = yield* db
+        const [current] = yield* db
           .select({ workspaceID: SessionTable.workspace_id })
           .from(SessionTable)
           .where(eq(SessionTable.id, input.sessionID))
-          .get()
           .pipe(Effect.orDie)
 
         if (current?.workspaceID) {
@@ -669,7 +665,6 @@ export const layer = Layer.effect(
           .from(EventTable)
           .where(eq(EventTable.aggregate_id, input.sessionID))
           .orderBy(asc(EventTable.seq))
-          .all()
           .pipe(Effect.orDie)
         if (rows.length === 0)
           return yield* new SessionEventsNotFoundError({
@@ -734,7 +729,6 @@ export const layer = Layer.effect(
         .select()
         .from(WorkspaceTable)
         .where(eq(WorkspaceTable.project_id, project.id))
-        .all()
         .pipe(Effect.orDie))
         .map(fromRow)
         .sort((a, b) => a.id.localeCompare(b.id))
@@ -783,7 +777,6 @@ export const layer = Layer.effect(
                 project_id: info.projectID,
                 time_used: info.timeUsed,
               })
-              .run()
               .pipe(Effect.orDie)
 
             yield* startSync(info)
@@ -793,7 +786,7 @@ export const layer = Layer.effect(
     })
 
     const get = Effect.fn("Workspace.get")(function* (id: WorkspaceV2.ID) {
-      const row = yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) return
       return fromRow(row)
     })
@@ -803,7 +796,6 @@ export const layer = Layer.effect(
         .select({ id: SessionTable.id, parentID: SessionTable.parent_id })
         .from(SessionTable)
         .where(eq(SessionTable.workspace_id, id))
-        .all()
         .pipe(Effect.orDie)
       const sessionIDs = new Set(sessions.map((sessionInfo) => sessionInfo.id))
       yield* Effect.forEach(
@@ -813,7 +805,7 @@ export const layer = Layer.effect(
         { discard: true },
       )
 
-      const row = yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) return
 
       yield* stopSync(id)
@@ -826,7 +818,7 @@ export const layer = Layer.effect(
         () => Effect.logError("adapter not available when removing workspace", { type: row.type }),
       )
 
-      yield* db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run().pipe(Effect.orDie)
+      yield* db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).pipe(Effect.orDie)
       return info
     })
 
@@ -871,7 +863,6 @@ export const layer = Layer.effect(
         .selectDistinct({ workspace: WorkspaceTable })
         .from(WorkspaceTable)
         .where(eq(WorkspaceTable.project_id, projectID))
-        .all()
         .pipe(Effect.orDie)
 
       for (const { workspace } of rows) {
@@ -956,7 +947,6 @@ function synced(db: Database.Interface["db"], state: Record<string, number>): Ef
     })
     .from(EventSequenceTable)
     .where(inArray(EventSequenceTable.aggregate_id, ids))
-    .all()
     .pipe(
       Effect.orDie,
       Effect.map((rows) => {

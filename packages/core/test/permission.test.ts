@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -18,7 +19,7 @@ import { eq } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const current = Layer.succeed(
   Location.Service,
   Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
@@ -51,7 +52,6 @@ function setup(rules: PermissionV2.Ruleset = []) {
       .insert(ProjectTable)
       .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
       .onConflictDoNothing()
-      .run()
       .pipe(Effect.orDie)
     yield* db
       .insert(SessionTable)
@@ -65,7 +65,6 @@ function setup(rules: PermissionV2.Ruleset = []) {
         agent: "test",
       })
       .onConflictDoNothing()
-      .run()
       .pipe(Effect.orDie)
     yield* setRules(rules)
   })
@@ -184,7 +183,6 @@ describe("PermissionV2", () => {
         .update(SessionTable)
         .set({ agent: null })
         .where(eq(SessionTable.id, SessionV2.ID.make("ses_test")))
-        .run()
         .pipe(Effect.orDie)
       const agents = yield* AgentV2.Service
       const update = yield* agents.transform()
@@ -211,7 +209,6 @@ describe("PermissionV2", () => {
         .update(SessionTable)
         .set({ agent: null })
         .where(eq(SessionTable.id, SessionV2.ID.make("ses_test")))
-        .run()
         .pipe(Effect.orDie)
       const agents = yield* AgentV2.Service
       yield* agents.update((editor) => {
@@ -293,7 +290,7 @@ describe("PermissionV2", () => {
 
       const { db } = yield* Database.Service
       expect(
-        yield* db.select().from(PermissionTable).where(eq(PermissionTable.project_id, Project.ID.global)).all(),
+        yield* db.select().from(PermissionTable).where(eq(PermissionTable.project_id, Project.ID.global)),
       ).toMatchObject([{ action: "read", resource: "src/*" }])
       const saved = yield* PermissionSaved.Service
       const id = (yield* saved.list())[0]!.id

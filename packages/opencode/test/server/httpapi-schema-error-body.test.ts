@@ -60,7 +60,6 @@ const seedCorruptStepFinishPart = Effect.gen(function* () {
       } as never, // drizzle's .set() can't narrow the discriminated union
     })
     .where(eq(PartTable.id, partID))
-    .run()
     .pipe(Effect.orDie)
   return info.id
 })

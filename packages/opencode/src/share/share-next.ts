@@ -222,11 +222,10 @@ export const layer = Layer.effect(
     })
 
     const get = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const row = yield* db
+      const [row] = yield* db
         .select()
         .from(SessionShareTable)
         .where(eq(SessionShareTable.session_id, sessionID))
-        .get()
         .pipe(Effect.orDie)
       if (!row) return
       return { id: row.id, secret: row.secret, url: row.url } satisfies Share
@@ -324,7 +323,6 @@ export const layer = Layer.effect(
           target: SessionShareTable.session_id,
           set: { id: result.id, secret: result.secret, url: result.url },
         })
-        .run()
         .pipe(Effect.orDie)
       const s = yield* InstanceState.get(state)
       s.shared.set(sessionID, result)
@@ -353,7 +351,7 @@ export const layer = Layer.effect(
         Effect.flatMap((r) => httpOk.execute(r)),
       )
 
-      yield* db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run().pipe(Effect.orDie)
+      yield* db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).pipe(Effect.orDie)
       s.shared.delete(sessionID)
       s.queue.delete(sessionID)
     })

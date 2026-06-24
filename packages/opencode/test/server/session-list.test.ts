@@ -216,13 +216,11 @@ describe("session.list", () => {
           .update(SessionTable)
           .set({ path: null })
           .where(eq(SessionTable.id, current.id))
-          .run()
           .pipe(Effect.orDie)
         yield* db
           .update(SessionTable)
           .set({ path: null })
           .where(eq(SessionTable.id, sibling.id))
-          .run()
           .pipe(Effect.orDie)
 
         const pathIDs = (yield* SessionNs.Service.use((session) =>

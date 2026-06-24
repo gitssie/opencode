@@ -7,7 +7,7 @@ import { effectCmd } from "../effect-cmd"
 
 const QueryCommand = effectCmd({
   command: "$0 [query]",
-  describe: "open an interactive sqlite3 shell or run a query",
+  describe: "open an interactive psql shell or run a query",
   instance: false,
   builder: (yargs: Argv) => {
     return yargs
@@ -26,7 +26,7 @@ const QueryCommand = effectCmd({
     const query = args.query as string | undefined
     if (query) {
       const { db } = yield* Database.Service
-      const result = yield* db.all<Record<string, unknown>>(sql.raw(query)).pipe(Effect.orDie)
+      const result = yield* db.execute<Record<string, unknown>>(sql.raw(query)).pipe(Effect.orDie)
       if (args.format === "json") console.log(JSON.stringify(result, null, 2))
       else if (result.length > 0) {
         const keys = Object.keys(result[0])
@@ -35,7 +35,8 @@ const QueryCommand = effectCmd({
       }
       return
     }
-    const child = spawn("sqlite3", [Database.path()], {
+    // Hand off to psql against the resolved connection URL for an interactive shell.
+    const child = spawn("psql", [Database.path()], {
       stdio: "inherit",
     })
     yield* Effect.promise(() => new Promise((resolve) => child.on("close", resolve)))
@@ -44,7 +45,7 @@ const QueryCommand = effectCmd({
 
 const PathCommand = effectCmd({
   command: "path",
-  describe: "print the database path",
+  describe: "print the database connection url",
   instance: false,
   handler: Effect.fn("Cli.db.path")(function* () {
     console.log(Database.path())

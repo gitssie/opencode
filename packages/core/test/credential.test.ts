@@ -1,27 +1,18 @@
-import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Credential } from "@opencode-ai/core/credential"
-import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { Integration } from "@opencode-ai/core/integration"
-import { tmpdir } from "./fixture/tmpdir"
 import { it } from "./lib/effect"
 
-function layer(directory: string) {
-  return Credential.layer.pipe(
-    Layer.provide(Database.layerFromPath(path.join(directory, "credential.db")).pipe(Layer.fresh)),
-  )
+function layer() {
+  return Credential.layer.pipe(Layer.provide(DatabaseTesting.layer.pipe(Layer.fresh)))
 }
 
 describe("Credential", () => {
   it.live("stores, updates, lists, and removes credentials", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((tmp) =>
-        Effect.gen(function* () {
-          const credentials = yield* Credential.Service
+    Effect.gen(function* () {
+      const credentials = yield* Credential.Service
           const integrationID = Integration.ID.make("openai")
           const created = yield* credentials.create({
             integrationID,
@@ -40,10 +31,8 @@ describe("Credential", () => {
           })
           expect(yield* credentials.list(integrationID)).toEqual([replacement])
 
-          yield* credentials.remove(replacement.id)
-          expect(yield* credentials.list(integrationID)).toEqual([])
-        }).pipe(Effect.provide(layer(tmp.path))),
-      ),
-    ),
+      yield* credentials.remove(replacement.id)
+      expect(yield* credentials.list(integrationID)).toEqual([])
+    }).pipe(Effect.provide(layer())),
   )
 })

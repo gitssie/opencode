@@ -184,8 +184,8 @@ export const layer = Layer.effect(
         .transaction(
           (d) =>
             Effect.gen(function* () {
-              const oldProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, oldID)).get()
-              const newProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, newID)).get()
+              const [oldProject] = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, oldID))
+              const [newProject] = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, newID))
               if (oldProject && !newProject) {
                 yield* d
                   .insert(ProjectTable)
@@ -194,29 +194,25 @@ export const layer = Layer.effect(
                     id: newID,
                     time_updated: Date.now(),
                   })
-                  .run()
               }
 
               // Project directories may be shared across distinct
               // checkouts which have diverged. Clear the directory
               // list and rely on it being re-populated to ensure
               // accuracy
-              yield* d.delete(ProjectDirectoryTable).where(eq(ProjectDirectoryTable.project_id, oldID)).run()
+              yield* d.delete(ProjectDirectoryTable).where(eq(ProjectDirectoryTable.project_id, oldID))
 
               yield* d
                 .update(SessionTable)
                 .set({ project_id: newID, time_updated: sql`${SessionTable.time_updated}` })
                 .where(eq(SessionTable.project_id, oldID))
-                .run()
               yield* d
                 .update(WorkspaceTable)
                 .set({ project_id: newID })
                 .where(eq(WorkspaceTable.project_id, oldID))
-                .run()
 
-              if (oldProject) yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID)).run()
+              if (oldProject) yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID))
             }),
-          { behavior: "immediate" },
         )
         .pipe(Effect.orDie)
     })
@@ -248,7 +244,7 @@ export const layer = Layer.effect(
       // Phase 2: upsert
       const projectID = ProjectV2.ID.make(data.id)
       yield* migrateProjectId(data.previous ? ProjectV2.ID.make(data.previous) : undefined, projectID)
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).pipe(Effect.orDie))[0]
       const existing = row
         ? fromRow(row)
         : {
@@ -314,7 +310,6 @@ export const layer = Layer.effect(
             commands: result.commands,
           },
         })
-        .run()
         .pipe(Effect.orDie)
 
       if (projectID !== ProjectV2.ID.global) {
@@ -322,7 +317,6 @@ export const layer = Layer.effect(
           .update(SessionTable)
           .set({ project_id: projectID })
           .where(and(eq(SessionTable.project_id, ProjectV2.ID.global), eq(SessionTable.directory, data.directory)))
-          .run()
           .pipe(Effect.orDie)
       }
 
@@ -363,16 +357,16 @@ export const layer = Layer.effect(
     })
 
     const list = Effect.fn("Project.list")(function* () {
-      return (yield* db.select().from(ProjectTable).all().pipe(Effect.orDie)).map(fromRow)
+      return (yield* db.select().from(ProjectTable).pipe(Effect.orDie)).map(fromRow)
     })
 
     const get = Effect.fn("Project.get")(function* (id: ProjectV2.ID) {
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).pipe(Effect.orDie))[0]
       return row ? fromRow(row) : undefined
     })
 
     const update = Effect.fn("Project.update")(function* (input: UpdateInput) {
-      const result = yield* db
+      const [result] = yield* db
         .update(ProjectTable)
         .set({
           name: input.name,
@@ -384,7 +378,6 @@ export const layer = Layer.effect(
         })
         .where(eq(ProjectTable.id, input.projectID))
         .returning()
-        .get()
         .pipe(Effect.orDie)
       if (!result) return yield* new NotFoundError({ projectID: input.projectID })
       const data = fromRow(result)
@@ -408,7 +401,6 @@ export const layer = Layer.effect(
         .update(ProjectTable)
         .set({ time_initialized: Date.now() })
         .where(eq(ProjectTable.id, id))
-        .run()
         .pipe(Effect.orDie)
     })
 
@@ -429,7 +421,7 @@ export const layer = Layer.effect(
     })
 
     const sandboxes = Effect.fn("Project.sandboxes")(function* (id: ProjectV2.ID) {
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) return []
       const data = fromRow(row)
       return yield* Effect.forEach(
@@ -444,33 +436,31 @@ export const layer = Layer.effect(
     })
 
     const addSandbox = Effect.fn("Project.addSandbox")(function* (id: ProjectV2.ID, directory: string) {
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) throw new Error(`Project not found: ${id}`)
       const sandbox = AbsolutePath.make(directory)
       const sboxes = [...row.sandboxes]
       if (!sboxes.includes(sandbox)) sboxes.push(sandbox)
-      const result = yield* db
+      const [result] = yield* db
         .update(ProjectTable)
         .set({ sandboxes: sboxes, time_updated: Date.now() })
         .where(eq(ProjectTable.id, id))
         .returning()
-        .get()
         .pipe(Effect.orDie)
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))
     })
 
     const removeSandbox = Effect.fn("Project.removeSandbox")(function* (id: ProjectV2.ID, directory: string) {
-      const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get().pipe(Effect.orDie)
+      const row = (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).pipe(Effect.orDie))[0]
       if (!row) throw new Error(`Project not found: ${id}`)
       const sandbox = AbsolutePath.make(directory)
       const sboxes = row.sandboxes.filter((s) => s !== sandbox)
-      const result = yield* db
+      const [result] = yield* db
         .update(ProjectTable)
         .set({ sandboxes: sboxes, time_updated: Date.now() })
         .where(eq(ProjectTable.id, id))
         .returning()
-        .get()
         .pipe(Effect.orDie)
       if (!result) throw new Error(`Project not found: ${id}`)
       yield* emitUpdated(fromRow(result))

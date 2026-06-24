@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { asc } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -11,7 +12,7 @@ import { SessionTable, TodoTable } from "@opencode-ai/core/session/sql"
 import { SessionTodo } from "@opencode-ai/core/session/todo"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const todos = SessionTodo.layer.pipe(Layer.provide(database), Layer.provide(events))
 const it = testEffect(Layer.mergeAll(database, events, todos))
@@ -22,7 +23,6 @@ const setup = Effect.gen(function* () {
   yield* db
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-    .run()
     .pipe(Effect.orDie)
   yield* db
     .insert(SessionTable)
@@ -34,7 +34,6 @@ const setup = Effect.gen(function* () {
       title: "todo",
       version: "test",
     })
-    .run()
     .pipe(Effect.orDie)
 })
 
@@ -65,7 +64,7 @@ describe("SessionTodo", () => {
         { content: "first", status: "in_progress", priority: "high" },
       ])
       expect(
-        (yield* db.select().from(TodoTable).orderBy(asc(TodoTable.position)).all().pipe(Effect.orDie)).map((row) => ({
+        (yield* db.select().from(TodoTable).orderBy(asc(TodoTable.position)).pipe(Effect.orDie)).map((row) => ({
           content: row.content,
           position: row.position,
         })),

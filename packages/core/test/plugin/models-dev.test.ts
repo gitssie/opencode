@@ -5,6 +5,7 @@ import { Catalog } from "@opencode-ai/core/catalog"
 import { Integration } from "@opencode-ai/core/integration"
 import { Credential } from "@opencode-ai/core/credential"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Location } from "@opencode-ai/core/location"
@@ -25,7 +26,7 @@ const plugins = PluginV2.layer.pipe(Layer.provide(events))
 const policy = Policy.layer.pipe(Layer.provide(locationLayer))
 const connections = Credential.layer.pipe(
   Layer.fresh,
-  Layer.provide(Database.layerFromPath(":memory:").pipe(Layer.fresh)),
+  Layer.provide(DatabaseTesting.layer.pipe(Layer.fresh)),
   Layer.provide(events),
 )
 const integrations = Integration.locationLayer.pipe(Layer.provide(events), Layer.provide(connections))

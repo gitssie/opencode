@@ -11,6 +11,7 @@ import {
 } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { EventTable } from "@opencode-ai/core/event/sql"
@@ -56,7 +57,7 @@ import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream }
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const questions = QuestionV2.layer.pipe(Layer.provide(events))
 const projector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
@@ -309,7 +310,6 @@ const insertSession = (id: SessionV2.ID) =>
         version: "test",
       })
       .onConflictDoNothing()
-      .run()
       .pipe(Effect.orDie)
   })
 
@@ -337,7 +337,6 @@ const setup = Effect.gen(function* () {
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
     .onConflictDoNothing()
-    .run()
     .pipe(Effect.orDie)
   yield* insertSession(sessionID)
 })
@@ -380,12 +379,11 @@ const replaySessionProjection = (id: SessionV2.ID) =>
       .from(EventTable)
       .where(eq(EventTable.aggregate_id, id))
       .orderBy(asc(EventTable.seq))
-      .all()
       .pipe(Effect.orDie)
 
     yield* events.remove(id)
-    yield* db.delete(SessionInputTable).where(eq(SessionInputTable.session_id, id)).run().pipe(Effect.orDie)
-    yield* db.delete(SessionMessageTable).where(eq(SessionMessageTable.session_id, id)).run().pipe(Effect.orDie)
+    yield* db.delete(SessionInputTable).where(eq(SessionInputTable.session_id, id)).pipe(Effect.orDie)
+    yield* db.delete(SessionMessageTable).where(eq(SessionMessageTable.session_id, id)).pipe(Effect.orDie)
     yield* events.replayAll(
       recorded.map((event) => ({
         id: event.id,
@@ -493,7 +491,6 @@ const verifyEphemeralDeltas = (kind: FragmentKind) =>
       .select({ type: EventTable.type })
       .from(EventTable)
       .where(eq(EventTable.type, EventV2.versionedType(fixture.delta.type, 1)))
-      .all()
       .pipe(Effect.orDie)
     expect(Array.from(yield* Fiber.join(live))).toHaveLength(32)
     expect(deltas).toHaveLength(0)
@@ -674,11 +671,10 @@ describe("SessionRunnerLLM", () => {
       expect(requests).toHaveLength(0)
       expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
       expect(
-        yield* db
+        (yield* db
           .select()
           .from(SessionContextEpochTable)
-          .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get(),
+          .where(eq(SessionContextEpochTable.session_id, sessionID)))[0],
       ).toBeUndefined()
 
       systemUnavailable = false
@@ -707,11 +703,10 @@ describe("SessionRunnerLLM", () => {
         location: { directory: AbsolutePath.make("/moved") },
       })
       expect(
-        yield* db
+        (yield* db
           .select()
           .from(SessionContextEpochTable)
-          .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get(),
+          .where(eq(SessionContextEpochTable.session_id, sessionID)))[0],
       ).toBeUndefined()
 
       yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Second" }), resume: false })
@@ -735,7 +730,6 @@ describe("SessionRunnerLLM", () => {
         .update(SessionContextEpochTable)
         .set({ snapshot: { invalid: { value: "bad" } } })
         .where(eq(SessionContextEpochTable.session_id, sessionID))
-        .run()
         .pipe(Effect.orDie)
       yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Second" }), resume: false })
       requests.length = 0
@@ -771,11 +765,10 @@ describe("SessionRunnerLLM", () => {
       expect(Exit.isFailure(yield* session.resume(sessionID).pipe(Effect.exit))).toBe(true)
       expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
       expect(
-        yield* db
+        (yield* db
           .select()
           .from(SessionContextEpochTable)
-          .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get(),
+          .where(eq(SessionContextEpochTable.session_id, sessionID)))[0],
       ).toBeUndefined()
       expect((yield* session.get(sessionID)).location.directory).toBe(AbsolutePath.make("/moved"))
     }),
@@ -807,7 +800,6 @@ describe("SessionRunnerLLM", () => {
           .select({ id: EventTable.id })
           .from(EventTable)
           .where(eq(EventTable.type, "session.next.context.updated.1"))
-          .all()
           .pipe(Effect.orDie),
       ).toHaveLength(1)
       yield* replaySessionProjection(sessionID)
@@ -878,7 +870,6 @@ describe("SessionRunnerLLM", () => {
         .update(SessionTable)
         .set({ agent: "reviewer" })
         .where(eq(SessionTable.id, sessionID))
-        .run()
         .pipe(Effect.orDie)
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: new Prompt({ text: "First" }), resume: false })
@@ -1018,12 +1009,11 @@ describe("SessionRunnerLLM", () => {
         ["Initial context\n\nReviewer skills"],
       ])
       expect(
-        yield* db
+        (yield* db
           .select({ replacementSeq: SessionContextEpochTable.replacement_seq })
           .from(SessionContextEpochTable)
           .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get()
-          .pipe(Effect.orDie),
+          .pipe(Effect.orDie))[0],
       ).toEqual({ replacementSeq: null })
     }),
   )
@@ -1095,12 +1085,11 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(1)
       expect(
-        yield* db
+        (yield* db
           .select({ replacementSeq: SessionContextEpochTable.replacement_seq })
           .from(SessionContextEpochTable)
           .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get()
-          .pipe(Effect.orDie),
+          .pipe(Effect.orDie))[0],
       ).toEqual({ replacementSeq: null })
     }),
   )
@@ -1311,12 +1300,11 @@ describe("SessionRunnerLLM", () => {
       const latest = yield* SessionInput.latestSeq(db, sessionID)
 
       expect(
-        yield* db
+        (yield* db
           .select({ replacementSeq: SessionContextEpochTable.replacement_seq })
           .from(SessionContextEpochTable)
           .where(eq(SessionContextEpochTable.session_id, sessionID))
-          .get()
-          .pipe(Effect.orDie),
+          .pipe(Effect.orDie))[0],
       ).toEqual({ replacementSeq: latest })
     }),
   )

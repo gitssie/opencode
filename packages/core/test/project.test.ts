@@ -5,6 +5,7 @@ import path from "path"
 import { Effect, Layer, Schema } from "effect"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Git } from "@opencode-ai/core/git"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -13,7 +14,7 @@ import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
-const databaseLayer = Database.layerFromPath(":memory:")
+const databaseLayer = DatabaseTesting.layer
 const directoriesLayer = ProjectDirectories.layer.pipe(Layer.provide(databaseLayer))
 const it = testEffect(
   Layer.mergeAll(

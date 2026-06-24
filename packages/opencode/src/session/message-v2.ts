@@ -116,7 +116,6 @@ function hydrate(db: Database.Interface["db"], rows: (typeof MessageTable.$infer
         .from(PartTable)
         .where(inArray(PartTable.message_id, ids))
         .orderBy(PartTable.message_id, PartTable.id)
-        .all()
         .pipe(Effect.orDie)
       for (const row of partRows) {
         const next = part(row)
@@ -449,14 +448,12 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
     .where(where)
     .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
     .limit(input.limit + 1)
-    .all()
     .pipe(Effect.orDie)
   if (rows.length === 0) {
-    const row = yield* db
+    const [row] = yield* db
       .select({ id: SessionTable.id })
       .from(SessionTable)
       .where(eq(SessionTable.id, input.sessionID))
-      .get()
       .pipe(Effect.orDie)
     if (!row) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
     return {
@@ -508,7 +505,6 @@ export function parts(messageID: MessageID) {
       .from(PartTable)
       .where(eq(PartTable.message_id, messageID))
       .orderBy(PartTable.id)
-      .all()
       .pipe(Effect.orDie)
     return rows.map(part)
   })
@@ -516,11 +512,10 @@ export function parts(messageID: MessageID) {
 
 export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: SessionID; messageID: MessageID }) {
   const { db } = yield* Database.Service
-  const row = yield* db
+  const [row] = yield* db
     .select()
     .from(MessageTable)
     .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
-    .get()
     .pipe(Effect.orDie)
   if (!row) return yield* new NotFoundError({ message: `Message not found: ${input.messageID}` })
   return {

@@ -174,7 +174,6 @@ const insertRemoteWorkspaceWithoutSync = (input: {
     yield* db
       .insert(WorkspaceTable)
       .values({ id, type: input.type, project_id: input.projectID })
-      .run()
       .pipe(Effect.orDie)
     return id
   })

@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { asc, eq } from "drizzle-orm"
 import { DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -16,7 +17,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable, SessionMessageTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const it = testEffect(Layer.mergeAll(database, events, projector))
@@ -35,7 +36,6 @@ describe("Tool.Progress", () => {
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -47,7 +47,6 @@ describe("Tool.Progress", () => {
           title: "progress",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const assistantMessageID = SessionMessage.ID.create()
       yield* service.publish(SessionEvent.Step.Started, {
@@ -58,11 +57,10 @@ describe("Tool.Progress", () => {
         model,
       })
       const readAssistant = Effect.gen(function* () {
-        const row = yield* db
+        const [row] = yield* db
           .select()
           .from(SessionMessageTable)
           .where(eq(SessionMessageTable.id, assistantMessageID))
-          .get()
           .pipe(Effect.orDie)
         if (!row) return yield* Effect.die("Missing projected assistant")
         return Schema.decodeUnknownSync(SessionMessage.Assistant)({ ...row.data, id: row.id, type: row.type })
@@ -150,7 +148,6 @@ describe("Tool.Progress", () => {
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, sessionID))
         .orderBy(asc(EventTable.seq))
-        .all()
         .pipe(Effect.orDie)
       expect(rows.map((row) => row.type)).toContain(EventV2.versionedType(SessionEvent.Tool.Progress.type, 1))
       expect(rows.map((row) => row.type)).toContain(EventV2.versionedType(SessionEvent.Tool.Success.type, 1))

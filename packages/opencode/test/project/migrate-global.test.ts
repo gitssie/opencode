@@ -35,7 +35,6 @@ function seed(opts: { id: SessionID; dir: string; project: ProjectV2.ID }) {
         time_created: now,
         time_updated: now,
       })
-      .run()
       .pipe(Effect.orDie),
   )
 }
@@ -52,7 +51,6 @@ function ensureGlobal() {
         sandboxes: [],
       })
       .onConflictDoNothing()
-      .run()
       .pipe(Effect.orDie),
   )
 }
@@ -82,7 +80,14 @@ describe("migrateFromGlobal", () => {
 
       // 4. The session should have been migrated to the real project ID
       const row = yield* Database.Service.use(({ db }) =>
-        db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie),
+        db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.id, id))
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows[0]),
+          ),
       )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(real.id)
@@ -111,7 +116,14 @@ describe("migrateFromGlobal", () => {
       yield* projects.fromDirectory(tmp)
 
       const row = yield* Database.Service.use(({ db }) =>
-        db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie),
+        db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.id, id))
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows[0]),
+          ),
       )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(project.id)
@@ -135,7 +147,14 @@ describe("migrateFromGlobal", () => {
       yield* projects.fromDirectory(tmp)
 
       const row = yield* Database.Service.use(({ db }) =>
-        db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie),
+        db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.id, id))
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows[0]),
+          ),
       )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(ProjectV2.ID.global)
@@ -157,7 +176,14 @@ describe("migrateFromGlobal", () => {
 
       yield* projects.fromDirectory(tmp)
       const row = yield* Database.Service.use(({ db }) =>
-        db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie),
+        db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.id, id))
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows[0]),
+          ),
       )
       expect(row).toBeDefined()
       // Should remain under "global" — not stolen

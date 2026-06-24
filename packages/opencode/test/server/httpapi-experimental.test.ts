@@ -67,7 +67,6 @@ function insertAccount() {
           time_created: Date.now(),
           time_updated: Date.now(),
         })
-        .run()
         .pipe(Effect.orDie)
       return "account-test"
     }),
@@ -76,7 +75,6 @@ function insertAccount() {
         db
           .delete(AccountTable)
           .where(eq(AccountTable.id, AccountV2.ID.make(id)))
-          .run()
           .pipe(Effect.orDie),
       ),
   )
@@ -89,7 +87,6 @@ function setSessionUpdated(session: Session.Info, updated: number) {
       .update(SessionTable)
       .set({ time_updated: updated })
       .where(eq(SessionTable.id, session.id))
-      .run()
       .pipe(Effect.orDie)
   })
 }

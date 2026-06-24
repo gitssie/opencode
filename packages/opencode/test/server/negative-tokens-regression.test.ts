@@ -60,7 +60,6 @@ function seedNegativeTokenSession() {
         } as never,
       })
       .where(eq(PartTable.id, partID))
-      .run()
       .pipe(Effect.orDie)
 
     return info.id

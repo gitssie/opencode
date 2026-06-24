@@ -159,7 +159,6 @@ const insertLegacyAssistantMessage = (sessionID: SessionIDType, seq = 1, time = 
           } as NonNullable<(typeof SessionMessageTable.$inferInsert)["data"]>,
         },
       ])
-      .run()
       .pipe(Effect.orDie)
     return message
   })
@@ -179,7 +178,6 @@ const insertCorruptV2Message = (sessionID: SessionIDType, time = 1) =>
           data: {} as NonNullable<(typeof SessionMessageTable.$inferInsert)["data"]>,
         },
       ])
-      .run()
       .pipe(Effect.orDie)
   })
 
@@ -195,25 +193,24 @@ const setLegacySummaryDiff = (sessionID: SessionIDType) =>
         summary_diffs: [{ additions: 1, deletions: 0 }],
       })
       .where(eq(SessionTable.id, sessionID))
-      .run()
       .pipe(Effect.orDie)
   })
 
 const getWorkspaceID = (sessionID: SessionIDType) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
-    return yield* db
+    const rows = yield* db
       .select({ workspaceID: SessionTable.workspace_id })
       .from(SessionTable)
       .where(eq(SessionTable.id, sessionID))
-      .get()
       .pipe(Effect.orDie)
+    return rows[0]
   })
 
 const clearSessionPath = (sessionID: SessionIDType) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
-    yield* db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie)
+    yield* db.update(SessionTable).set({ path: null }).where(eq(SessionTable.id, sessionID)).pipe(Effect.orDie)
   })
 
 function request(path: string, init?: RequestInit) {
@@ -605,7 +602,6 @@ describe("session HttpApi", () => {
             .select()
             .from(SessionInputTable)
             .where(eq(SessionInputTable.id, SessionMessage.ID.make("msg_http_prompt")))
-            .get()
             .pipe(Effect.orDie),
         )
         expect(admitted).toMatchObject({

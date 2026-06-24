@@ -21,7 +21,6 @@ function directories(projectID: ProjectV2.ID) {
       .select()
       .from(ProjectDirectoryTable)
       .where(eq(ProjectDirectoryTable.project_id, projectID))
-      .all()
       .pipe(
         Effect.orDie,
         Effect.map((rows) =>
@@ -163,7 +162,6 @@ describe("Project directory persistence", () => {
           time_updated: Date.now(),
           sandboxes: [],
         })
-        .run()
         .pipe(Effect.orDie)
       yield* Effect.promise(() =>
         $`git remote add origin git@github.com:project-directory-test/collision.git`.cwd(tmp).quiet(),
@@ -185,7 +183,6 @@ describe("Project directory persistence", () => {
       yield* db
         .insert(ProjectDirectoryTable)
         .values({ project_id: original.project.id, directory: stale })
-        .run()
         .pipe(Effect.orDie)
       const remoteID = ProjectV2.ID.make(Hash.fast("git-remote:github.com/project-directory-test/migration"))
       yield* Effect.promise(() =>

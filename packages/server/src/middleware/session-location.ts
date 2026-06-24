@@ -41,11 +41,10 @@ export const sessionLocationLayer = Layer.effect(
               }),
           ),
         )
-        const row = yield* db
+        const [row] = yield* db
           .select({ directory: SessionTable.directory, workspaceID: SessionTable.workspace_id })
           .from(SessionTable)
           .where(eq(SessionTable.id, sessionID))
-          .get()
           .pipe(Effect.orDie)
         if (!row)
           return yield* new SessionNotFoundError({

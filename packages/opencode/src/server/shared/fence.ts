@@ -12,8 +12,8 @@ export function load(db: Database.Interface["db"], ids?: string[]) {
   return Effect.gen(function* () {
     const rows = yield* (
       ids?.length
-        ? db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, ids)).all()
-        : db.select().from(EventSequenceTable).all()
+        ? db.select().from(EventSequenceTable).where(inArray(EventSequenceTable.aggregate_id, ids))
+        : db.select().from(EventSequenceTable)
     ).pipe(Effect.orDie)
 
     return Object.fromEntries(rows.map((row) => [row.aggregate_id, row.seq]))

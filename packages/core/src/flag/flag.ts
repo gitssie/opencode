@@ -44,7 +44,12 @@ export const Flag = {
     copy === undefined ? process.platform === "win32" : truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
   OPENCODE_MODELS_URL: process.env["OPENCODE_MODELS_URL"],
   OPENCODE_MODELS_PATH: process.env["OPENCODE_MODELS_PATH"],
-  OPENCODE_DB: process.env["OPENCODE_DB"],
+  // Read live so test preloads (and runtime callers) that set the connection
+  // after module init are honored. The database connection is resolved lazily
+  // via `Database.path()`, not at import time.
+  get OPENCODE_DB() {
+    return process.env["OPENCODE_DB"]
+  },
 
   OPENCODE_WORKSPACE_ID: process.env["OPENCODE_WORKSPACE_ID"],
   OPENCODE_EXPERIMENTAL_WORKSPACES: enabledByExperimental("OPENCODE_EXPERIMENTAL_WORKSPACES"),

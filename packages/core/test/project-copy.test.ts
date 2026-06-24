@@ -8,6 +8,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Git } from "@opencode-ai/core/git"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
@@ -16,7 +17,7 @@ import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
-const databaseLayer = Database.layerFromPath(":memory:")
+const databaseLayer = DatabaseTesting.layer
 const eventLayer = EventV2.layer.pipe(Layer.provide(databaseLayer))
 const directoriesLayer = ProjectDirectories.layer.pipe(Layer.provide(databaseLayer))
 const copyLayer = ProjectCopy.layer.pipe(
@@ -56,12 +57,10 @@ function setup() {
     yield* db
       .insert(ProjectTable)
       .values({ id: projectID, worktree: sourceDirectory, sandboxes: [], time_created: 1, time_updated: 1 })
-      .run()
       .pipe(Effect.orDie)
     yield* db
       .insert(ProjectDirectoryTable)
       .values({ project_id: projectID, directory: sourceDirectory })
-      .run()
       .pipe(Effect.orDie)
     return { root, sourceDirectory, projectID, db }
   })
@@ -73,7 +72,6 @@ function stored(projectID: Project.ID) {
       .select({ directory: ProjectDirectoryTable.directory, strategy: ProjectDirectoryTable.strategy })
       .from(ProjectDirectoryTable)
       .where(eq(ProjectDirectoryTable.project_id, projectID))
-      .all()
       .pipe(
         Effect.orDie,
         Effect.map((rows) => rows.toSorted((a, b) => a.directory.localeCompare(b.directory))),
@@ -203,7 +201,6 @@ describe("ProjectCopy", () => {
       yield* input.db
         .insert(ProjectDirectoryTable)
         .values({ project_id: input.projectID, directory: unavailable, strategy: "acme/missing" })
-        .run()
         .pipe(Effect.orDie)
 
       const error = yield* copy
@@ -316,7 +313,6 @@ describe("ProjectCopy", () => {
       yield* input.db
         .insert(ProjectDirectoryTable)
         .values({ project_id: input.projectID, directory: target })
-        .run()
         .pipe(Effect.orDie)
       const fiber = yield* events
         .subscribe(ProjectCopy.Event.Updated)
@@ -395,7 +391,6 @@ describe("ProjectCopy", () => {
       yield* input.db
         .insert(ProjectDirectoryTable)
         .values({ project_id: input.projectID, directory: missing })
-        .run()
         .pipe(Effect.orDie)
       const copy = yield* ProjectCopy.Service
 

@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { Project } from "@opencode-ai/core/project"
@@ -32,7 +33,7 @@ const permission = Layer.succeed(
     list: () => Effect.die("unused"),
   }),
 )
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const todos = SessionTodo.layer.pipe(Layer.provide(database), Layer.provide(events))
 const registry = ToolRegistry.defaultLayer.pipe(Layer.provide(permission))
@@ -46,7 +47,6 @@ const setup = Effect.gen(function* () {
   yield* db
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-    .run()
     .pipe(Effect.orDie)
   yield* db
     .insert(SessionTable)
@@ -58,7 +58,6 @@ const setup = Effect.gen(function* () {
       title: "todowrite",
       version: "test",
     })
-    .run()
     .pipe(Effect.orDie)
 })
 

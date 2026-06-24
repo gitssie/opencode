@@ -30,6 +30,9 @@
   },
   "devDependencies": {
     "@babel/core": "7.28.4",
+    "@effect/sql-pg": "catalog:",
+    "@electric-sql/pglite": "catalog:",
+    "@electric-sql/pglite-socket": "catalog:",
     "@octokit/webhooks-types": "7.6.1",
     "@opencode-ai/core": "workspace:*",
     "@opencode-ai/http-recorder": "workspace:*",

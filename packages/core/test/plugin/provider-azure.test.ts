@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { Credential } from "@opencode-ai/core/credential"
 import { Integration } from "@opencode-ai/core/integration"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
@@ -14,16 +15,16 @@ import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 import { fakeSelectorSdk, it, model, npmLayer, provider, withEnv } from "./provider-helper"
 
-const database = Database.layerFromPath(":memory:").pipe(Layer.fresh)
+const database = DatabaseTesting.layer
 const preferences = Credential.layer.pipe(Layer.provide(database))
 const accounts = Layer.merge(
-  Credential.layer.pipe(Layer.provide(database), Layer.provide(preferences), Layer.provide(EventV2.defaultLayer)),
+  Credential.layer.pipe(Layer.provide(database), Layer.provide(preferences), Layer.provide(EventV2.layer.pipe(Layer.provide(database)))),
   preferences,
 )
 const itWithAccount = testEffect(
   Catalog.locationLayer.pipe(
     Layer.provideMerge(accounts),
-    Layer.provideMerge(EventV2.defaultLayer),
+    Layer.provideMerge(EventV2.layer.pipe(Layer.provide(database))),
     Layer.provideMerge(
       Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("test") }))),
     ),

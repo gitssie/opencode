@@ -1,9 +1,9 @@
 import { describe, expect } from "bun:test"
-import path from "path"
 import { Effect, Layer, Stream } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { asc, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
@@ -23,9 +23,8 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
-import { tmpdir } from "./fixture/tmpdir"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projects = Layer.succeed(
   ProjectV2.Service,
@@ -151,7 +150,7 @@ describe("SessionV2.create", () => {
       const input = { id, location }
       const created = yield* session.create(input)
 
-      yield* db.update(SessionTable).set({ agent: "build" }).where(eq(SessionTable.id, id)).run().pipe(Effect.orDie)
+      yield* db.update(SessionTable).set({ agent: "build" }).where(eq(SessionTable.id, id)).pipe(Effect.orDie)
 
       expect(yield* session.create(input)).toMatchObject({ id: created.id, agent: "build" })
     }),
@@ -189,7 +188,7 @@ describe("SessionV2.create", () => {
       const created = yield* session.create({ location })
 
       expect(
-        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).all().pipe(Effect.orDie),
+        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).pipe(Effect.orDie),
       ).toMatchObject([{ type: EventV2.versionedType(SessionV1.Event.Created.type, 1) }])
     }),
   )
@@ -201,7 +200,7 @@ describe("SessionV2.create", () => {
       const created = yield* session.create({ id, location })
 
       expect(
-        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).pipe(Effect.orDie))[0],
       ).toMatchObject({
         data: { sessionID: id },
       })
@@ -243,7 +242,6 @@ describe("SessionV2.create", () => {
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, created.id))
         .orderBy(asc(EventTable.seq))
-        .all()
         .pipe(Effect.orDie)).map((event) => ({
         id: event.id,
         aggregateID: event.aggregate_id,
@@ -252,11 +250,7 @@ describe("SessionV2.create", () => {
         data: event.data,
       }))
 
-      const tmp = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-      )
-      const targetDatabase = Database.layerFromPath(path.join(tmp.path, "target.sqlite"))
+      const targetDatabase = DatabaseTesting.layer.pipe(Layer.fresh)
       const targetEvents = EventV2.layer.pipe(Layer.provide(targetDatabase))
       const targetProjector = SessionProjector.layer.pipe(Layer.provide(targetEvents), Layer.provide(targetDatabase))
       const targetStore = SessionStore.layer.pipe(Layer.provide(targetDatabase))
@@ -268,7 +262,6 @@ describe("SessionV2.create", () => {
         yield* db
           .insert(ProjectTable)
           .values({ id: ProjectV2.ID.global, worktree: location.directory, sandboxes: [] })
-          .run()
           .pipe(Effect.orDie)
 
         expect(yield* store.get(created.id)).toBeUndefined()
@@ -300,7 +293,6 @@ describe("SessionV2.create", () => {
             .from(EventTable)
             .where(eq(EventTable.aggregate_id, created.id))
             .orderBy(asc(EventTable.seq))
-            .all()
             .pipe(Effect.orDie)).map((event) => [event.seq, event.type]),
         ).toEqual([
           [0, EventV2.versionedType(SessionV1.Event.Created.type, 1)],
@@ -370,7 +362,7 @@ describe("SessionV2.create", () => {
 
       const { db } = yield* Database.Service
       expect(
-        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).all().pipe(Effect.orDie),
+        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, created.id)).pipe(Effect.orDie),
       ).toHaveLength(3)
       expect(yield* session.get(created.id)).toMatchObject({ model })
     }),

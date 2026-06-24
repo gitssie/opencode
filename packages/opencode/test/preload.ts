@@ -83,8 +83,15 @@ delete process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 delete process.env["OTEL_EXPORTER_OTLP_HEADERS"]
 delete process.env["OTEL_RESOURCE_ATTRIBUTES"]
 
-// Use in-memory sqlite
-process.env["OPENCODE_DB"] = ":memory:"
+// Use a shared embedded PGlite instance (the postgres analog of the old shared
+// sqlite `:memory:` default). Tests that need an isolated database use
+// `DatabaseTesting.layer`; server tests reset shared state via `resetDatabase`.
+const { DatabaseTesting } = await import("@opencode-ai/core/database/testing")
+const sharedPglite = await DatabaseTesting.startSharedPglite()
+process.env["OPENCODE_DB"] = sharedPglite.url
+afterAll(async () => {
+  await sharedPglite.dispose()
+})
 
 // Now safe to import from src/
 const { initProjectors } = await import("../src/server/projectors")

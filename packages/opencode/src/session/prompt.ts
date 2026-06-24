@@ -613,11 +613,10 @@ export const layer = Layer.effect(
     })
 
     const currentModel = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const current = yield* db
+      const [current] = yield* db
         .select({ model: SessionTable.model })
         .from(SessionTable)
         .where(eq(SessionTable.id, sessionID))
-        .get()
         .pipe(Effect.orDie)
       if (current?.model) {
         return {
@@ -644,11 +643,10 @@ export const layer = Layer.effect(
         throw error
       }
 
-      const current = yield* db
+      const [current] = yield* db
         .select({ agent: SessionTable.agent, model: SessionTable.model })
         .from(SessionTable)
         .where(eq(SessionTable.id, input.sessionID))
-        .get()
         .pipe(Effect.orDie)
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID

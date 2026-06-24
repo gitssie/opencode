@@ -15,6 +15,7 @@ import { toolDefinitions } from "./lib/tool"
 import { FSUtil } from "../src/fs-util"
 import { Credential } from "../src/credential"
 import { Database } from "../src/database/database"
+import { DatabaseTesting } from "../src/database/testing"
 import { EventV2 } from "../src/event"
 import { Global } from "../src/global"
 import { ModelsDev } from "../src/models-dev"
@@ -35,7 +36,7 @@ const it = testEffect(
           Project.defaultLayer,
           EventV2.defaultLayer,
           Credential.defaultLayer,
-          Credential.layer.pipe(Layer.provide(Database.layerFromPath(":memory:").pipe(Layer.fresh))),
+          Credential.layer.pipe(Layer.provide(DatabaseTesting.layer.pipe(Layer.fresh))),
           Npm.defaultLayer,
           ModelsDev.defaultLayer,
           FSUtil.defaultLayer,

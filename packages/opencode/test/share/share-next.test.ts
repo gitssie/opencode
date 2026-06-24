@@ -58,12 +58,12 @@ function integrationLayer(client: HttpClient.HttpClient) {
 const share = (id: SessionID) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
-    return yield* db
+    const rows = yield* db
       .select()
       .from(SessionShareTable)
       .where(eq(SessionShareTable.session_id, id))
-      .get()
       .pipe(Effect.orDie)
+    return rows[0]
   })
 
 const seed = (url: string, org?: string) =>
@@ -254,7 +254,6 @@ describe("ShareNext", () => {
               url: "https://legacy-share.example.com/share/abc",
               secret: "sec_123",
             })
-            .run()
             .pipe(Effect.orDie)
 
           yield* events.publish(Session.Event.Diff, {

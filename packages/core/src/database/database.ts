@@ -1,5 +1,7 @@
 export * as Database from "./database"
 
+import { existsSync, readFileSync } from "fs"
+import nodePath from "path"
 import { EffectDrizzlePg } from "@opencode-ai/effect-drizzle-pg"
 import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer, Redacted } from "effect"
@@ -36,33 +38,77 @@ export const layer = Layer.effect(
  * The URL is provided to `@effect/sql-pg`'s `PgClient.layer`, which yields both
  * `PgClient` and the generic `effect/unstable/sql/SqlClient` that the drizzle pg
  * adapter consumes.
+ *
+ * A failed `PgClient` connection (`SqlError`) is an unrecoverable startup fault,
+ * so it is folded into a defect with `Layer.orDie` — the resulting layer has a
+ * `never` error channel, matching how the rest of the app provides the database.
  */
 export function layerFromUrl(url: string) {
-  return layer.pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url) })))
+  return layer.pipe(Layer.provide(PgClient.layer({ url: Redacted.make(url) })), Layer.orDie)
 }
 
 /**
- * @deprecated Postgres has no on-disk file path. This now accepts a postgres
- * connection URL and is kept only so existing call sites resolve while Phase B4
- * migrates them to PGlite-backed test layers. Prefer {@link layerFromUrl}.
+ * Shape of the optional `db.json` config file in the data directory.
+ *
+ * Either a full `url`, or discrete connection fields. No hidden defaults: only
+ * what is written here (or via env) takes effect.
  */
-export const layerFromPath = layerFromUrl
+export interface DbConfig {
+  readonly url?: string
+  readonly host?: string
+  readonly port?: number
+  readonly database?: string
+  readonly user?: string
+  readonly password?: string
+}
+
+function dbConfigPath() {
+  return nodePath.join(Global.Path.data, "db.json")
+}
+
+function readDbConfig(): DbConfig | undefined {
+  const file = dbConfigPath()
+  if (!existsSync(file)) return undefined
+  const parsed = JSON.parse(readFileSync(file, "utf-8")) as DbConfig
+  return parsed
+}
+
+function urlFromDiscrete(config: DbConfig): string | undefined {
+  if (!config.host) return undefined
+  const auth = config.user
+    ? `${encodeURIComponent(config.user)}${config.password ? `:${encodeURIComponent(config.password)}` : ""}@`
+    : ""
+  const port = config.port ? `:${config.port}` : ""
+  const database = config.database ? `/${config.database}` : ""
+  return `postgres://${auth}${config.host}${port}${database}`
+}
 
 /**
  * Resolve the postgres connection URL.
  *
- * `OPENCODE_DB` is a postgres connection URL (no longer a file path). When unset,
- * fall back to the standard `DATABASE_URL`. There is intentionally no hardcoded
- * default so the active connection is always explicit in configuration.
+ * Resolution order (no hidden defaults — fail loudly if nothing is configured):
+ *   1. `OPENCODE_DB` env (a postgres connection URL)
+ *   2. `db.json` in the data directory (`{ url }` or discrete `host`/`port`/...)
+ *   3. `DATABASE_URL` env
  */
 export function path() {
-  const url = Flag.OPENCODE_DB ?? process.env.DATABASE_URL
-  if (!url) {
+  if (Flag.OPENCODE_DB) return Flag.OPENCODE_DB
+
+  const config = readDbConfig()
+  if (config) {
+    if (config.url) return config.url
+    const url = urlFromDiscrete(config)
+    if (url) return url
     throw new Error(
-      "No postgres connection URL configured. Set OPENCODE_DB (or DATABASE_URL) to a postgres connection string.",
+      `db.json at ${dbConfigPath()} must provide either "url" or a "host" (with optional port/database/user/password).`,
     )
   }
-  return url
+
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL
+
+  throw new Error(
+    "No postgres connection configured. Set OPENCODE_DB, create db.json in the data directory, or set DATABASE_URL.",
+  )
 }
 
 export const defaultLayer = Layer.unwrap(

@@ -216,12 +216,10 @@ describe("Project.fromDirectory", () => {
           time_created: Date.now(),
           time_updated: Date.now(),
         })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(WorkspaceTable)
         .values({ id: workspaceID, type: "local", name: "test", project_id: rootProject.id })
-        .run()
         .pipe(Effect.orDie)
       yield* Effect.promise(() => $`git remote add origin git@github.com:acme/app.git`.cwd(tmp).quiet())
 
@@ -229,14 +227,14 @@ describe("Project.fromDirectory", () => {
 
       expect(result.project.id).toBe(remoteID)
       expect(
-        yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, rootProject.id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, rootProject.id)).pipe(Effect.orDie))[0],
       ).toBeUndefined()
       expect(
-        (yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie))
+        ((yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).pipe(Effect.orDie))[0])
           ?.project_id,
       ).toBe(remoteID)
       expect(
-        (yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get().pipe(Effect.orDie))
+        ((yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).pipe(Effect.orDie))[0])
           ?.project_id,
       ).toBe(remoteID)
     }),

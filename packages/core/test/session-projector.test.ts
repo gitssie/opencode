@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer, Schema } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -21,7 +22,7 @@ import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const it = testEffect(Layer.mergeAll(database, events, projector))
@@ -50,7 +51,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -62,7 +62,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
 
@@ -129,7 +128,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -141,7 +139,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionMessage.ID.make("msg_admitted")
@@ -161,7 +158,7 @@ describe("SessionProjector", () => {
       })
 
       expect(
-        yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).pipe(Effect.orDie))[0],
       ).toMatchObject({ promoted_seq: event.seq })
     }),
   )
@@ -172,7 +169,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -184,7 +180,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
 
@@ -237,7 +232,6 @@ describe("SessionProjector", () => {
           .select({ id: EventTable.id })
           .from(EventTable)
           .where(eq(EventTable.type, SessionEvent.Compaction.Delta.type))
-          .all()
           .pipe(Effect.orDie),
       ).toEqual([])
       expect(
@@ -245,7 +239,6 @@ describe("SessionProjector", () => {
           .select({ id: SessionMessageTable.id })
           .from(SessionMessageTable)
           .where(eq(SessionMessageTable.type, "compaction"))
-          .all()
           .pipe(Effect.orDie),
       ).toEqual([])
       yield* events.publish(SessionEvent.Compaction.Ended, {
@@ -262,7 +255,6 @@ describe("SessionProjector", () => {
         .from(SessionMessageTable)
         .where(eq(SessionMessageTable.session_id, sessionID))
         .orderBy(asc(SessionMessageTable.seq))
-        .all()
         .pipe(Effect.orDie)
       const messages = rows.map((row) =>
         Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
@@ -284,7 +276,7 @@ describe("SessionProjector", () => {
         recent: "recent context",
       })
       expect(
-        yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).pipe(Effect.orDie))[0],
       ).toMatchObject({
         agent: "build",
         model,
@@ -299,7 +291,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -311,7 +302,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionMessage.ID.make("msg_creator_collision")
@@ -329,7 +319,7 @@ describe("SessionProjector", () => {
 
       expect(exit._tag).toBe("Failure")
       expect(
-        yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).pipe(Effect.orDie))[0],
       ).toMatchObject({ type: "synthetic" })
     }),
   )
@@ -340,7 +330,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -352,7 +341,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionMessage.ID.make("msg_conflict")
@@ -375,7 +363,7 @@ describe("SessionProjector", () => {
 
       expect(String(exit)).toContain("SessionInput.LifecycleConflict")
       expect(
-        yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).pipe(Effect.orDie))[0],
       ).toMatchObject({ promoted_seq: null })
     }),
   )
@@ -386,7 +374,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -398,7 +385,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionMessage.ID.make("msg_conflict")
@@ -421,7 +407,7 @@ describe("SessionProjector", () => {
 
       expect(String(exit)).toContain("SessionInput.LifecycleConflict")
       expect(
-        yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).pipe(Effect.orDie))[0],
       ).toBeUndefined()
     }),
   )
@@ -432,7 +418,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -444,7 +429,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionMessage.ID.make("msg_delivery_conflict")
@@ -457,7 +441,7 @@ describe("SessionProjector", () => {
 
       expect(String(exit)).toContain("SessionInput.LifecycleConflict")
       expect(
-        yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).get().pipe(Effect.orDie),
+        (yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).pipe(Effect.orDie))[0],
       ).toMatchObject({ delivery: "queue", promoted_seq: null })
     }),
   )
@@ -493,7 +477,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -505,7 +488,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionMessageTable)
@@ -513,7 +495,6 @@ describe("SessionProjector", () => {
           assistantRow(SessionMessage.ID.make("msg_assistant_1"), 0),
           assistantRow(SessionMessage.ID.make("msg_assistant_2"), 1),
         ])
-        .run()
         .pipe(Effect.orDie)
 
       const service = yield* EventV2.Service
@@ -531,7 +512,6 @@ describe("SessionProjector", () => {
         .from(SessionMessageTable)
         .where(eq(SessionMessageTable.session_id, sessionID))
         .orderBy(asc(SessionMessageTable.id))
-        .all()
         .pipe(Effect.orDie)
       const messages = rows.map((row) =>
         Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
@@ -551,7 +531,6 @@ describe("SessionProjector", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -563,7 +542,6 @@ describe("SessionProjector", () => {
           title: "test",
           version: "test",
         })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionMessageTable)
@@ -574,7 +552,6 @@ describe("SessionProjector", () => {
             completed: DateTime.makeUnsafe(2),
           }),
         ])
-        .run()
         .pipe(Effect.orDie)
 
       const service = yield* EventV2.Service
@@ -590,7 +567,6 @@ describe("SessionProjector", () => {
         .from(SessionMessageTable)
         .where(eq(SessionMessageTable.session_id, sessionID))
         .orderBy(asc(SessionMessageTable.id))
-        .all()
         .pipe(Effect.orDie)
       const messages = rows.map((row) =>
         Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),

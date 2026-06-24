@@ -184,7 +184,6 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
       target: SessionTable.id,
       set: { project_id: row.project_id, directory: row.directory, path: row.path },
     })
-    .run()
     .pipe(Effect.orDie)
 
   for (const msg of exportData.messages) {
@@ -199,7 +198,6 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
         data: msgData as never,
       })
       .onConflictDoNothing()
-      .run()
       .pipe(Effect.orDie)
 
     for (const part of msg.parts) {
@@ -214,7 +212,6 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
           data: partData,
         })
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
     }
   }

@@ -3,6 +3,7 @@ import { HttpRecorderInternal } from "@opencode-ai/http-recorder/internal"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { Auth, LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -32,7 +33,7 @@ import { Effect, Layer } from "effect"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = SessionStore.layer.pipe(Layer.provide(database))
@@ -139,7 +140,6 @@ describe("SessionRunnerLLM recorded", () => {
         .insert(ProjectTable)
         .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -152,7 +152,6 @@ describe("SessionRunnerLLM recorded", () => {
           version: "test",
         })
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
       const session = yield* SessionV2.Service
       const prompt = yield* session.prompt({
@@ -176,7 +175,7 @@ describe("SessionRunnerLLM recorded", () => {
           .from(EventTable)
           .where(eq(EventTable.aggregate_id, sessionID))
           .orderBy(EventTable.seq)
-          .all()).map((event) => event.type),
+          ).map((event) => event.type),
       ).toEqual([
         "session.next.prompt.admitted.1",
         "session.next.prompt.promoted.1",

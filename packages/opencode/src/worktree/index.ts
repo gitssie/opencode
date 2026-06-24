@@ -498,11 +498,10 @@ export const layer: Layer.Layer<
       directory: string,
       input: { projectID: ProjectV2.ID; extra?: string },
     ) {
-      const row = yield* db
+      const [row] = yield* db
         .select()
         .from(ProjectTable)
         .where(eq(ProjectTable.id, input.projectID))
-        .get()
         .pipe(Effect.orDie)
       const project = row ? Project.fromRow(row) : undefined
       const startup = project?.commands?.start?.trim() ?? ""

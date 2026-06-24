@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { DateTime, Effect, Fiber, Layer, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { SessionEvent } from "@opencode-ai/core/session/event"
@@ -18,7 +19,7 @@ import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const projector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = SessionStore.layer.pipe(Layer.provide(database))
@@ -63,7 +64,6 @@ const setup = Effect.gen(function* () {
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
     .onConflictDoNothing()
-    .run()
     .pipe(Effect.orDie)
   yield* db
     .insert(SessionTable)
@@ -76,7 +76,6 @@ const setup = Effect.gen(function* () {
       version: "test",
     })
     .onConflictDoNothing()
-    .run()
     .pipe(Effect.orDie)
 })
 
@@ -85,7 +84,6 @@ const admittedCount = Database.Service.use(({ db }) =>
   db
     .select()
     .from(SessionInputTable)
-    .all()
     .pipe(
       Effect.orDie,
       Effect.map((rows) => rows.length),
@@ -97,7 +95,6 @@ const eventCount = (type: string) =>
       .select()
       .from(EventTable)
       .where(eq(EventTable.type, type))
-      .all()
       .pipe(
         Effect.orDie,
         Effect.map((rows) => rows.length),
@@ -109,8 +106,10 @@ const interruptEvent = Database.Service.use(({ db }) =>
     .select()
     .from(EventTable)
     .where(eq(EventTable.type, "session.next.interrupt.requested.1"))
-    .get()
-    .pipe(Effect.orDie),
+    .pipe(
+      Effect.orDie,
+      Effect.map((rows) => rows[0]),
+    ),
 )
 
 describe("SessionV2.prompt", () => {
@@ -404,15 +403,13 @@ describe("SessionV2.prompt", () => {
         .select()
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, sessionID))
-        .all()
         .pipe(Effect.orDie)
 
       yield* events.remove(sessionID)
-      yield* db.delete(SessionInputTable).where(eq(SessionInputTable.session_id, sessionID)).run().pipe(Effect.orDie)
+      yield* db.delete(SessionInputTable).where(eq(SessionInputTable.session_id, sessionID)).pipe(Effect.orDie)
       yield* db
         .delete(SessionMessageTable)
         .where(eq(SessionMessageTable.session_id, sessionID))
-        .run()
         .pipe(Effect.orDie)
       yield* events.replayAll(
         recorded.map((event) => ({
@@ -541,7 +538,6 @@ describe("SessionV2.prompt", () => {
           version: "test",
         })
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
       const prompt = new Prompt({ text: "Fix the failing tests" })
 

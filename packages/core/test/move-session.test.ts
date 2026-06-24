@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Database } from "@opencode-ai/core/database/database"
+import { DatabaseTesting } from "@opencode-ai/core/database/testing"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Git } from "@opencode-ai/core/git"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -21,7 +22,7 @@ import { SessionStore } from "@opencode-ai/core/session/store"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
-const database = Database.layerFromPath(":memory:")
+const database = DatabaseTesting.layer
 const events = EventV2.layer.pipe(Layer.provide(database))
 const directories = ProjectDirectories.layer.pipe(Layer.provide(database), Layer.provide(events))
 const projector = SessionProjector.layer.pipe(Layer.provide(database), Layer.provide(events))
@@ -91,7 +92,6 @@ describe("MoveSession", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: projectID, worktree: source, sandboxes: [], time_created: 1, time_updated: 1 })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -105,7 +105,6 @@ describe("MoveSession", () => {
           time_created: 1,
           time_updated: 1,
         })
-        .run()
         .pipe(Effect.orDie)
 
       yield* MoveSession.Service.use((service) =>
@@ -117,11 +116,10 @@ describe("MoveSession", () => {
       expect(yield* Effect.promise(() => fs.readFile(path.join(source, "tracked.txt"), "utf8"))).toBe("initial\n")
       expect(yield* Effect.promise(() => Bun.file(path.join(source, "untracked.txt")).exists())).toBe(false)
       expect(
-        yield* db
+        (yield* db
           .select({ directory: SessionTable.directory, path: SessionTable.path })
           .from(SessionTable)
-          .where(eq(SessionTable.id, sessionID))
-          .get(),
+          .where(eq(SessionTable.id, sessionID)))[0],
       ).toEqual({ directory: moved, path: "" })
     }),
   )
@@ -145,7 +143,6 @@ describe("MoveSession", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: projectID, worktree: source, sandboxes: [], time_created: 1, time_updated: 1 })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -159,7 +156,6 @@ describe("MoveSession", () => {
           time_created: 1,
           time_updated: 1,
         })
-        .run()
         .pipe(Effect.orDie)
 
       yield* MoveSession.Service.use((service) =>
@@ -169,11 +165,10 @@ describe("MoveSession", () => {
       expect(yield* Effect.promise(() => fs.readFile(path.join(source, "tracked.txt"), "utf8"))).toBe("changed\n")
       expect(yield* Effect.promise(() => fs.readFile(path.join(source, "untracked.txt"), "utf8"))).toBe("new\n")
       expect(
-        yield* db
+        (yield* db
           .select({ directory: SessionTable.directory, path: SessionTable.path })
           .from(SessionTable)
-          .where(eq(SessionTable.id, sessionID))
-          .get(),
+          .where(eq(SessionTable.id, sessionID)))[0],
       ).toEqual({ directory: destination, path: "packages" })
     }),
   )
@@ -211,7 +206,6 @@ describe("MoveSession", () => {
       yield* db
         .insert(ProjectTable)
         .values({ id: projectID, worktree: source, sandboxes: [], time_created: 1, time_updated: 1 })
-        .run()
         .pipe(Effect.orDie)
       yield* db
         .insert(SessionTable)
@@ -225,7 +219,6 @@ describe("MoveSession", () => {
           time_created: 1,
           time_updated: 1,
         })
-        .run()
         .pipe(Effect.orDie)
 
       yield* MoveSession.Service.use((service) =>
