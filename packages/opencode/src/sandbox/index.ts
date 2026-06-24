@@ -1,8 +1,9 @@
 import { Layer } from "effect"
+import { SandboxFs } from "./fs"
 import { SandboxSpawner } from "./spawner"
 
-// SandboxFs is disabled pending re-port onto upstream's new FileSystem/FSUtil
-// architecture (see opencode-3j8). Only the spawner sandbox is active.
-export const layer = Layer.mergeAll(SandboxSpawner.layer)
+// Both sandbox layers are gated internally on the OPENCODE_SANDBOX runtime flag:
+// when sandbox mode is off they pass through to the real services unchanged.
+export const layer = Layer.mergeAll(SandboxFs.layer, SandboxSpawner.layer)
 
 export * as Sandbox from "."

@@ -35,8 +35,8 @@ import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SandboxSpawner } from "@/sandbox/spawner"
+import { SandboxFs } from "@/sandbox/fs"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -44,7 +44,6 @@ import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
@@ -330,7 +329,11 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Provider.defaultLayer),
       Layer.provide(LSP.defaultLayer),
       Layer.provide(Instruction.defaultLayer),
-      Layer.provide(FSUtil.defaultLayer),
+      // Sandbox: wrap the filesystem service so the file tools (read/write/edit/
+      // glob/grep) are confined to the workspace, truncation dir, and /tmp. Same
+      // @opencode/FileSystem service tag as FSUtil.defaultLayer; SandboxFs.layer
+      // provides FSUtil.defaultLayer internally and is gated on OPENCODE_SANDBOX.
+      Layer.provide(SandboxFs.layer),
       Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(Format.defaultLayer),
@@ -432,10 +435,15 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   Provider.node,
   LSP.node,
   Instruction.node,
-  FSUtil.node,
+  // Sandbox: same sandbox-gated filesystem as defaultLayer (@opencode/FileSystem
+  // tag), confining the file tools to the workspace when OPENCODE_SANDBOX is set.
+  SandboxFs.node,
   EventV2Bridge.node,
   httpClient,
-  CrossSpawnSpawner.node,
+  // Sandbox: same sandbox-gated spawner as defaultLayer, so the httpapi server /
+  // prompt runtime (which build the node graph) also run child processes inside
+  // zerobox isolation when OPENCODE_SANDBOX is set.
+  SandboxSpawner.node,
   Format.node,
   Truncate.node,
   RuntimeFlags.node,
