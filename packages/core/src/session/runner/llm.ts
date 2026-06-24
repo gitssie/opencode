@@ -8,7 +8,7 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, Fiber, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -101,6 +101,12 @@ export const layer = Layer.effect(
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
     const db = (yield* Database.Service).db
+    // Long-lived scope tied to the runner service lifetime. The interrupt-time
+    // durable flush is forked into this scope (not the per-turn fiber's scope) so
+    // its database connection acquire can complete even while the turn fiber is
+    // being interrupted — otherwise a cancelled turn loses its partial output and
+    // hangs on `client.reserve`.
+    const runnerScope = yield* Effect.scope
     const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
@@ -286,7 +292,17 @@ export const layer = Layer.effect(
             ).pipe(FiberSet.run(toolFibers))
           }),
         ),
-        Effect.ensuring(withPublication(publisher.flush())),
+        // Durably flush any open partial fragments when the stream ends — including
+        // when the turn fiber is interrupted (cancellation). The flush is forked
+        // into the runner's long-lived scope and joined, so its event publishes can
+        // reserve a database connection and commit even though the surrounding fiber
+        // is finalizing; running it inline would deadlock on connection acquire.
+        Effect.ensuring(
+          withPublication(publisher.flush()).pipe(
+            Effect.forkIn(runnerScope, { startImmediately: true, uninterruptible: true }),
+            Effect.flatMap(Fiber.join),
+          ),
+        ),
       )
 
       return yield* Effect.uninterruptibleMask((restore) =>
