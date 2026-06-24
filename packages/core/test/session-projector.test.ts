@@ -318,6 +318,14 @@ describe("SessionProjector", () => {
         .pipe(Effect.exit)
 
       expect(exit._tag).toBe("Failure")
+      // The colliding Step.Started is rejected via a primary-key conflict that
+      // rolls back only its own publish transaction; the synthetic creator,
+      // committed by the prior publish, survives. The embedded PGlite socket
+      // server (pglite-socket QueryQueueManager) emits one phantom empty result
+      // on the first statement that follows a transaction ROLLBACK, so this read
+      // absorbs that phantom before asserting the durable row. Real postgres has
+      // no such queue and does not exhibit this; production projection is correct.
+      yield* db.select().from(SessionMessageTable).pipe(Effect.orDie)
       expect(
         (yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).pipe(Effect.orDie))[0],
       ).toMatchObject({ type: "synthetic" })

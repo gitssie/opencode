@@ -250,7 +250,13 @@ describe("SessionV2.create", () => {
         data: event.data,
       }))
 
-      const targetDatabase = DatabaseTesting.layer.pipe(Layer.fresh)
+      // One fresh PGlite-backed Database, shared by every target layer. Each
+      // `DatabaseTesting.layer` build owns a distinct PGlite instance, so the
+      // target DB layer must be a single reference that is memoized to one build
+      // across the merged target graph (the `Layer.fresh` is applied once, at the
+      // outer merge below). Otherwise the events, projector, and store each get
+      // their own database and replayed writes can't see sibling-committed rows.
+      const targetDatabase = DatabaseTesting.layer
       const targetEvents = EventV2.layer.pipe(Layer.provide(targetDatabase))
       const targetProjector = SessionProjector.layer.pipe(Layer.provide(targetEvents), Layer.provide(targetDatabase))
       const targetStore = SessionStore.layer.pipe(Layer.provide(targetDatabase))
