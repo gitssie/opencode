@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "version": "1.17.9",
+  "name": "@opencode-ai/effect-drizzle-pg",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "bun test --timeout 30000 --only-failures",
+    "typecheck": "tsgo --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./effect-postgres": "./src/effect-postgres/index.ts",
+    "./effect-postgres/migrator": "./src/effect-postgres/migrator.ts"
+  },
+  "devDependencies": {
+    "@effect/sql-pg": "catalog:",
+    "@electric-sql/pglite": "catalog:",
+    "@electric-sql/pglite-socket": "catalog:",
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/pg": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "pg": "catalog:"
+  },
+  "dependencies": {
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:"
+  }
+}
