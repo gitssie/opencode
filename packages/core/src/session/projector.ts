@@ -106,7 +106,6 @@ function applyUsage(
       time_updated: sql`${SessionTable.time_updated}`,
     })
     .where(eq(SessionTable.id, sessionID))
-    .run()
     .pipe(Effect.orDie)
 }
 
@@ -127,7 +126,6 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
             eq(SessionMessageTable.session_id, event.data.sessionID),
           ),
         )
-        .run()
         .pipe(Effect.orDie)
     }
     const appendMessage = (message: SessionMessage.Message) => insertMessage(db, event, message)
@@ -135,7 +133,7 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
       getCurrentAssistant() {
         return Effect.gen(function* () {
           // A newer turn supersedes stale incomplete rows; never resume an older assistant projection.
-          const row = yield* db
+          const [row] = yield* db
             .select()
             .from(SessionMessageTable)
             .where(
@@ -143,7 +141,6 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
             )
             .orderBy(desc(SessionMessageTable.seq))
             .limit(1)
-            .get()
             .pipe(Effect.orDie)
           if (!row) return
           const message = decodeRow(row)
@@ -152,7 +149,7 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
       },
       getAssistant(messageID) {
         return Effect.gen(function* () {
-          const row = yield* db
+          const [row] = yield* db
             .select()
             .from(SessionMessageTable)
             .where(
@@ -162,7 +159,6 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
                 eq(SessionMessageTable.type, "assistant"),
               ),
             )
-            .get()
             .pipe(Effect.orDie)
           if (!row) return
           const message = decodeRow(row)
@@ -176,7 +172,6 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
             .from(SessionMessageTable)
             .where(and(eq(SessionMessageTable.session_id, event.data.sessionID), eq(SessionMessageTable.type, "shell")))
             .orderBy(desc(SessionMessageTable.seq))
-            .all()
             .pipe(Effect.orDie)
           return rows
             .map(decodeRow)
@@ -205,7 +200,6 @@ function insertMessage(db: DatabaseService, event: SessionEvent.Event, message: 
       time_created: DateTime.toEpochMillis(message.time.created),
       data,
     })
-    .run()
     .pipe(Effect.orDie)
 }
 
@@ -216,12 +210,11 @@ export const layer = Layer.effectDiscard(
     yield* events.beforeCommit((event) => SessionInput.guardReservedID(db, event))
     yield* events.project(SessionV1.Event.Created, (event) =>
       Effect.gen(function* () {
-        const stored = yield* db
+        const [stored] = yield* db
           .insert(SessionTable)
           .values(sessionRow(event.data.info))
           .onConflictDoNothing()
           .returning({ sessionID: SessionTable.id })
-          .get()
           .pipe(Effect.orDie)
         if (!stored) return yield* Effect.die(new SessionAlreadyProjected())
         if (event.data.info.workspaceID) {
@@ -229,7 +222,6 @@ export const layer = Layer.effectDiscard(
             .update(WorkspaceTable)
             .set({ time_used: Date.now() })
             .where(eq(WorkspaceTable.id, event.data.info.workspaceID))
-            .run()
             .pipe(Effect.orDie)
         }
       }),
@@ -239,7 +231,6 @@ export const layer = Layer.effectDiscard(
         .update(SessionTable)
         .set(sessionRow(event.data.info))
         .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
         .pipe(Effect.orDie),
     )
     yield* events.project(SessionEvent.Moved, (event) =>
@@ -253,13 +244,12 @@ export const layer = Layer.effectDiscard(
             time_updated: DateTime.toEpochMillis(event.data.timestamp),
           })
           .where(eq(SessionTable.id, event.data.sessionID))
-          .run()
           .pipe(Effect.orDie)
         yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
     yield* events.project(SessionV1.Event.Deleted, (event) =>
-      db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie),
+      db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).pipe(Effect.orDie),
     )
     yield* events.project(SessionV1.Event.MessageUpdated, (event) =>
       Effect.gen(function* () {
@@ -271,7 +261,6 @@ export const layer = Layer.effectDiscard(
           .insert(MessageTable)
           .values({ id, session_id: sessionID, time_created, data })
           .onConflictDoUpdate({ target: MessageTable.id, set: { data } })
-          .run()
           .pipe(Effect.orDie)
       }),
     )
@@ -281,7 +270,6 @@ export const layer = Layer.effectDiscard(
           .select()
           .from(PartTable)
           .where(and(eq(PartTable.message_id, event.data.messageID), eq(PartTable.session_id, event.data.sessionID)))
-          .all()
           .pipe(Effect.orDie)
         for (const row of rows) {
           const previous = usage(row.data)
@@ -290,24 +278,21 @@ export const layer = Layer.effectDiscard(
         yield* db
           .delete(MessageTable)
           .where(and(eq(MessageTable.id, event.data.messageID), eq(MessageTable.session_id, event.data.sessionID)))
-          .run()
           .pipe(Effect.orDie)
       }),
     )
     yield* events.project(SessionV1.Event.PartRemoved, (event) =>
       Effect.gen(function* () {
-        const row = yield* db
+        const [row] = yield* db
           .select()
           .from(PartTable)
           .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
-          .get()
           .pipe(Effect.orDie)
         const previous = row && usage(row.data)
         if (previous) yield* applyUsage(db, event.data.sessionID, previous, -1)
         yield* db
           .delete(PartTable)
           .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
-          .run()
           .pipe(Effect.orDie)
       }),
     )
@@ -317,12 +302,11 @@ export const layer = Layer.effectDiscard(
         const messageID = event.data.part.messageID
         const sessionID = event.data.part.sessionID
         const data = partData(event.data.part)
-        const row = yield* db.select().from(PartTable).where(eq(PartTable.id, id)).get().pipe(Effect.orDie)
+        const [row] = yield* db.select().from(PartTable).where(eq(PartTable.id, id)).pipe(Effect.orDie)
         yield* db
           .insert(PartTable)
           .values({ id, message_id: messageID, session_id: sessionID, time_created: event.data.time, data })
           .onConflictDoUpdate({ target: PartTable.id, set: { data } })
-          .run()
           .pipe(Effect.orDie)
         const previous = row && usage(row.data)
         const next = usage(event.data.part)
@@ -336,7 +320,6 @@ export const layer = Layer.effectDiscard(
         .update(SessionTable)
         .set({ agent: event.data.agent, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
         .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
         .pipe(
           Effect.orDie,
           Effect.andThen(run(db, event)),
@@ -349,7 +332,6 @@ export const layer = Layer.effectDiscard(
           .update(SessionTable)
           .set({ model: event.data.model, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
           .where(eq(SessionTable.id, event.data.sessionID))
-          .run()
           .pipe(Effect.orDie)
         yield* run(db, event)
         if (event.seq === undefined)
@@ -360,11 +342,10 @@ export const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Prompted, (event) =>
       Effect.gen(function* () {
         const messageID = event.data.messageID
-        const existing = yield* db
+        const [existing] = yield* db
           .select({ id: SessionMessageTable.id })
           .from(SessionMessageTable)
           .where(eq(SessionMessageTable.id, messageID))
-          .get()
           .pipe(Effect.orDie)
         if (existing) return yield* Effect.die(new PromptAlreadyProjected())
         yield* run(db, event)

@@ -52,7 +52,6 @@ export const layer = Layer.effect(
         .select()
         .from(PermissionTable)
         .where(input?.projectID ? eq(PermissionTable.project_id, input.projectID) : undefined)
-        .all()
         .pipe(Effect.orDie)
       return rows.map(
         (row): Info => ({ id: row.id, projectID: row.project_id, action: row.action, resource: row.resource }),
@@ -72,12 +71,11 @@ export const layer = Layer.effect(
           })),
         )
         .onConflictDoNothing()
-        .run()
         .pipe(Effect.orDie)
     })
 
     const remove = Effect.fn("PermissionSaved.remove")(function* (id: ID) {
-      yield* db.delete(PermissionTable).where(eq(PermissionTable.id, id)).run().pipe(Effect.orDie)
+      yield* db.delete(PermissionTable).where(eq(PermissionTable.id, id)).pipe(Effect.orDie)
     })
 
     return Service.of({ list, add, remove })

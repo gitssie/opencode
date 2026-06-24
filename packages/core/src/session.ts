@@ -206,7 +206,6 @@ export const layer = Layer.effect(
           .insert(ProjectTable)
           .values({ id: project.id, worktree: project.directory, vcs: project.vcs?.type, sandboxes: [] })
           .onConflictDoNothing()
-          .run()
           .pipe(Effect.orDie)
         const now = Date.now()
         const info = SessionV1.SessionInfo.make({
@@ -288,9 +287,7 @@ export const layer = Layer.effect(
             order === "asc" ? asc(sortColumn) : desc(sortColumn),
             order === "asc" ? asc(SessionTable.id) : desc(SessionTable.id),
           )
-        const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
-          Effect.orDie,
-        )
+        const rows = yield* (input.limit === undefined ? query : query.limit(input.limit)).pipe(Effect.orDie)
         return (direction === "previous" ? rows.toReversed() : rows).map((row) => fromRow(row))
       }),
       messages: Effect.fn("V2Session.messages")(function* (input) {
@@ -299,14 +296,13 @@ export const layer = Layer.effect(
         const requestedOrder = input.order ?? "desc"
         const order = direction === "previous" ? (requestedOrder === "asc" ? "desc" : "asc") : requestedOrder
         const anchor = input.cursor
-          ? yield* db
+          ? (yield* db
               .select({ seq: SessionMessageTable.seq })
               .from(SessionMessageTable)
               .where(
                 and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, input.cursor.id)),
               )
-              .get()
-              .pipe(Effect.orDie)
+              .pipe(Effect.orDie))[0]
           : undefined
         if (input.cursor && !anchor) return []
         const boundary = anchor
@@ -322,9 +318,7 @@ export const layer = Layer.effect(
           .from(SessionMessageTable)
           .where(where)
           .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
-        const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
-          Effect.orDie,
-        )
+        const rows = yield* (input.limit === undefined ? query : query.limit(input.limit)).pipe(Effect.orDie)
         return yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)
       }),
       message: Effect.fn("V2Session.message")(function* (input) {

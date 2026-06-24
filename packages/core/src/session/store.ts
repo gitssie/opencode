@@ -32,7 +32,7 @@ export const layer = Layer.effect(
 
     return Service.of({
       get: Effect.fn("SessionStore.get")(function* (sessionID) {
-        const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
+        const [row] = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
       }),
       context: Effect.fn("SessionStore.context")(function* (sessionID) {
@@ -42,11 +42,10 @@ export const layer = Layer.effect(
         return yield* SessionHistory.loadForRunner(db, sessionID, baselineSeq)
       }),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
-        const row = yield* db
+        const [row] = yield* db
           .select()
           .from(SessionMessageTable)
           .where(eq(SessionMessageTable.id, messageID))
-          .get()
           .pipe(Effect.orDie)
         return row
           ? {

@@ -49,7 +49,7 @@ export const layer = Layer.effect(
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
+            yield* tx.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID))
             if (input.todos.length === 0) return
             yield* tx
               .insert(TodoTable)
@@ -62,7 +62,6 @@ export const layer = Layer.effect(
                   position,
                 })),
               )
-              .run()
           }),
         )
         .pipe(Effect.orDie)
@@ -75,7 +74,6 @@ export const layer = Layer.effect(
         .from(TodoTable)
         .where(eq(TodoTable.session_id, sessionID))
         .orderBy(asc(TodoTable.position))
-        .all()
         .pipe(Effect.orDie)
       return rows.map((row) => ({
         content: row.content,

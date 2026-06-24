@@ -123,23 +123,21 @@ const initializeOnce = Effect.fnUntraced(function* (
 })
 
 const exists = Effect.fn("SessionContextEpoch.exists")(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
-  return (
-    (yield* db
-      .select({ sessionID: SessionContextEpochTable.session_id })
-      .from(SessionContextEpochTable)
-      .where(eq(SessionContextEpochTable.session_id, sessionID))
-      .get()
-      .pipe(Effect.orDie)) !== undefined
-  )
+  const [row] = yield* db
+    .select({ sessionID: SessionContextEpochTable.session_id })
+    .from(SessionContextEpochTable)
+    .where(eq(SessionContextEpochTable.session_id, sessionID))
+    .pipe(Effect.orDie)
+  return row !== undefined
 })
 
 const find = Effect.fn("SessionContextEpoch.find")(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
-  return yield* db
+  const [row] = yield* db
     .select()
     .from(SessionContextEpochTable)
     .where(eq(SessionContextEpochTable.session_id, sessionID))
-    .get()
     .pipe(Effect.orDie)
+  return row
 })
 
 const requireAgentSelection = Effect.fnUntraced(function* (
@@ -147,11 +145,10 @@ const requireAgentSelection = Effect.fnUntraced(function* (
   sessionID: SessionSchema.ID,
   agent: AgentV2.ID,
 ) {
-  const selected = yield* db
+  const [selected] = yield* db
     .select({ agent: SessionTable.agent })
     .from(SessionTable)
     .where(eq(SessionTable.id, sessionID))
-    .get()
     .pipe(Effect.orDie)
   if (!selected || (selected.agent !== null && selected.agent !== agent)) return yield* Effect.die(new AgentMismatch())
 })
@@ -171,7 +168,6 @@ export const requestReplacement = Effect.fn("SessionContextEpoch.requestReplacem
         or(isNull(SessionContextEpochTable.replacement_seq), lt(SessionContextEpochTable.replacement_seq, seq)),
       ),
     )
-    .run()
     .pipe(Effect.orDie)
 })
 
@@ -182,7 +178,6 @@ export const reset = Effect.fn("SessionContextEpoch.reset")(function* (
   yield* db
     .delete(SessionContextEpochTable)
     .where(eq(SessionContextEpochTable.session_id, sessionID))
-    .run()
     .pipe(Effect.orDie)
 })
 
@@ -197,7 +192,7 @@ const insert = Effect.fnUntraced(function* (
     .transaction(
       () =>
         Effect.gen(function* () {
-          const placed = yield* db
+          const [placed] = yield* db
             .select({ agent: SessionTable.agent })
             .from(SessionTable)
             .where(
@@ -209,7 +204,6 @@ const insert = Effect.fnUntraced(function* (
                   : eq(SessionTable.workspace_id, location.workspaceID),
               ),
             )
-            .get()
             .pipe(Effect.orDie)
           if (!placed) return yield* Effect.die(new LocationMismatch())
           if (placed.agent !== null && placed.agent !== agent) return yield* Effect.die(new AgentMismatch())
@@ -226,14 +220,12 @@ const insert = Effect.fnUntraced(function* (
             })
             .onConflictDoNothing()
             .returning({ sessionID: SessionContextEpochTable.session_id })
-            .get()
             .pipe(
               Effect.orDie,
-              Effect.flatMap((inserted) => (inserted ? Effect.void : Effect.die(new RevisionMismatch()))),
+              Effect.flatMap(([inserted]) => (inserted ? Effect.void : Effect.die(new RevisionMismatch()))),
             )
           return baselineSeq
         }),
-      { behavior: "immediate" },
     )
     .pipe(Effect.orDie)
 })
@@ -251,7 +243,7 @@ const replace = Effect.fnUntraced(function* (
       () =>
         Effect.gen(function* () {
           yield* requireAgentSelection(db, sessionID, agent)
-          const updated = yield* db
+          const [updated] = yield* db
             .update(SessionContextEpochTable)
             .set({
               baseline: generation.baseline,
@@ -268,11 +260,9 @@ const replace = Effect.fnUntraced(function* (
               ),
             )
             .returning({ revision: SessionContextEpochTable.revision })
-            .get()
             .pipe(Effect.orDie)
           if (!updated) return yield* Effect.die(new RevisionMismatch())
         }),
-      { behavior: "immediate" },
     )
     .pipe(Effect.orDie)
 })
@@ -283,12 +273,11 @@ const fence = Effect.fnUntraced(function* (
   agent: AgentV2.ID,
   expectedRevision: number,
 ) {
-  const current = yield* db
+  const [current] = yield* db
     .select({ selected: SessionTable.agent, revision: SessionContextEpochTable.revision })
     .from(SessionContextEpochTable)
     .innerJoin(SessionTable, eq(SessionTable.id, SessionContextEpochTable.session_id))
     .where(eq(SessionContextEpochTable.session_id, sessionID))
-    .get()
     .pipe(Effect.orDie)
   if (!current || (current.selected !== null && current.selected !== agent))
     return yield* Effect.die(new AgentMismatch())
@@ -301,7 +290,7 @@ export const current = Effect.fn("SessionContextEpoch.current")(function* (
   agent: AgentV2.ID,
   revision: number,
 ) {
-  const value = yield* db
+  const [value] = yield* db
     .select({
       agent: SessionContextEpochTable.agent,
       selected: SessionTable.agent,
@@ -310,7 +299,6 @@ export const current = Effect.fn("SessionContextEpoch.current")(function* (
     .from(SessionContextEpochTable)
     .innerJoin(SessionTable, eq(SessionTable.id, SessionContextEpochTable.session_id))
     .where(eq(SessionContextEpochTable.session_id, sessionID))
-    .get()
     .pipe(Effect.orDie)
   return (
     value !== undefined &&
@@ -326,7 +314,7 @@ const advance = Effect.fnUntraced(function* (
   expectedRevision: number,
   snapshot: SystemContext.Snapshot,
 ) {
-  const updated = yield* db
+  const [updated] = yield* db
     .update(SessionContextEpochTable)
     .set({ snapshot, revision: expectedRevision + 1 })
     .where(
@@ -337,7 +325,6 @@ const advance = Effect.fnUntraced(function* (
       ),
     )
     .returning({ revision: SessionContextEpochTable.revision })
-    .get()
     .pipe(Effect.orDie)
   if (!updated) return yield* Effect.die(new RevisionMismatch())
 })

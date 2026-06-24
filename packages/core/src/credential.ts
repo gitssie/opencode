@@ -83,7 +83,6 @@ export const layer = Layer.effect(
           .select()
           .from(CredentialTable)
           .orderBy(asc(CredentialTable.time_created))
-          .all()
           .pipe(Effect.orDie)).flatMap((row) => {
           const credential = stored(row)
           return credential ? [credential] : []
@@ -95,14 +94,13 @@ export const layer = Layer.effect(
           .from(CredentialTable)
           .where(eq(CredentialTable.integration_id, integrationID))
           .orderBy(asc(CredentialTable.time_created))
-          .all()
           .pipe(Effect.orDie)).flatMap((row) => {
           const credential = stored(row)
           return credential ? [credential] : []
         })
       }),
       get: Effect.fn("Credential.get")(function* (id) {
-        const row = yield* db.select().from(CredentialTable).where(eq(CredentialTable.id, id)).get().pipe(Effect.orDie)
+        const [row] = yield* db.select().from(CredentialTable).where(eq(CredentialTable.id, id)).pipe(Effect.orDie)
         return row ? stored(row) : undefined
       }),
       create: Effect.fn("Credential.create")(function* (input) {
@@ -118,7 +116,6 @@ export const layer = Layer.effect(
               yield* tx
                 .delete(CredentialTable)
                 .where(eq(CredentialTable.integration_id, credential.integrationID))
-                .run()
               yield* tx
                 .insert(CredentialTable)
                 .values({
@@ -127,7 +124,6 @@ export const layer = Layer.effect(
                   label: credential.label,
                   value: credential.value,
                 })
-                .run()
             }),
           )
           .pipe(Effect.orDie)
@@ -139,11 +135,10 @@ export const layer = Layer.effect(
           .update(CredentialTable)
           .set({ label: updates.label, value: updates.value })
           .where(eq(CredentialTable.id, id))
-          .run()
           .pipe(Effect.orDie)
       }),
       remove: Effect.fn("Credential.remove")(function* (id) {
-        yield* db.delete(CredentialTable).where(eq(CredentialTable.id, id)).run().pipe(Effect.orDie)
+        yield* db.delete(CredentialTable).where(eq(CredentialTable.id, id)).pipe(Effect.orDie)
       }),
     })
   }),

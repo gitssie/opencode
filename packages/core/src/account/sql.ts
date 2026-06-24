@@ -1,19 +1,20 @@
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, boolean, integer, primaryKey } from "drizzle-orm/pg-core"
 
 import { AccountV2 } from "../account"
 import { Timestamps } from "../database/schema.sql"
 
-export const AccountTable = sqliteTable("account", {
+export const AccountTable = pgTable("account", {
   id: text().$type<AccountV2.ID>().primaryKey(),
   email: text().notNull(),
   url: text().notNull(),
   access_token: text().$type<AccountV2.AccessToken>().notNull(),
   refresh_token: text().$type<AccountV2.RefreshToken>().notNull(),
-  token_expiry: integer(),
+  token_expiry: bigint({ mode: "number" }),
   ...Timestamps,
 })
 
-export const AccountStateTable = sqliteTable("account_state", {
+// Singleton row keyed by a fixed id supplied explicitly on upsert (see account repo).
+export const AccountStateTable = pgTable("account_state", {
   id: integer().primaryKey(),
   active_account_id: text()
     .$type<AccountV2.ID>()
@@ -22,15 +23,15 @@ export const AccountStateTable = sqliteTable("account_state", {
 })
 
 // LEGACY
-export const ControlAccountTable = sqliteTable(
+export const ControlAccountTable = pgTable(
   "control_account",
   {
     email: text().notNull(),
     url: text().notNull(),
     access_token: text().$type<AccountV2.AccessToken>().notNull(),
     refresh_token: text().$type<AccountV2.RefreshToken>().notNull(),
-    token_expiry: integer(),
-    active: integer({ mode: "boolean" })
+    token_expiry: bigint({ mode: "number" }),
+    active: boolean()
       .notNull()
       .$default(() => false),
     ...Timestamps,

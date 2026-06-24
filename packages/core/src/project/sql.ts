@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core"
+import { pgTable, text, bigint, primaryKey } from "drizzle-orm/pg-core"
 import * as DatabasePath from "../database/path"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectSchema } from "./schema"
 
-export const ProjectTable = sqliteTable("project", {
+export const ProjectTable = pgTable("project", {
   id: text().$type<ProjectSchema.ID>().primaryKey(),
   worktree: DatabasePath.absoluteColumn().notNull(),
   vcs: text(),
@@ -12,12 +12,12 @@ export const ProjectTable = sqliteTable("project", {
   icon_url_override: text(),
   icon_color: text(),
   ...Timestamps,
-  time_initialized: integer(),
+  time_initialized: bigint({ mode: "number" }),
   sandboxes: DatabasePath.absoluteArrayColumn().notNull(),
-  commands: text({ mode: "json" }).$type<{ start?: string }>(),
+  commands: DatabasePath.jsonColumn<{ start?: string }>(),
 })
 
-export const ProjectDirectoryTable = sqliteTable(
+export const ProjectDirectoryTable = pgTable(
   "project_directory",
   {
     project_id: text()
@@ -27,7 +27,7 @@ export const ProjectDirectoryTable = sqliteTable(
     directory: DatabasePath.absoluteColumn().notNull(),
     type: text().$type<"main" | "root" | "git_worktree">(),
     strategy: text(),
-    time_created: integer()
+    time_created: bigint({ mode: "number" })
       .notNull()
       .$default(() => Date.now()),
   },

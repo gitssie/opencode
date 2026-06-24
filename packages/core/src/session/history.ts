@@ -11,14 +11,14 @@ type DatabaseService = Database.Interface["db"]
 const decode = Schema.decodeUnknownEffect(SessionMessage.Message)
 
 const latestCompaction = Effect.fnUntraced(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
-  return yield* db
+  const [row] = yield* db
     .select()
     .from(SessionMessageTable)
     .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "compaction")))
     .orderBy(desc(SessionMessageTable.seq))
     .limit(1)
-    .get()
     .pipe(Effect.orDie)
+  return row
 })
 
 const messageRows = Effect.fnUntraced(function* (
@@ -47,7 +47,6 @@ const messageRows = Effect.fnUntraced(function* (
       ),
     )
     .orderBy(asc(SessionMessageTable.seq))
-    .all()
     .pipe(Effect.orDie)
   return rows
 })
@@ -70,8 +69,10 @@ export const load = Effect.fn("SessionHistory.load")(function* (db: DatabaseServ
         .select({ baselineSeq: SessionContextEpochTable.baseline_seq })
         .from(SessionContextEpochTable)
         .where(eq(SessionContextEpochTable.session_id, sessionID))
-        .get()
-        .pipe(Effect.orDie),
+        .pipe(
+          Effect.orDie,
+          Effect.map((rows) => rows[0]),
+        ),
       latestCompaction(db, sessionID),
     ],
     { concurrency: "unbounded" },

@@ -7,7 +7,7 @@ import { LayerNode } from "../effect/layer-node"
 import { AbsolutePath, optionalOmitUndefined } from "../schema"
 import { ProjectSchema } from "./schema"
 import { ProjectDirectoryTable } from "./sql"
-import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
+import type { EffectDrizzlePg } from "@opencode-ai/effect-drizzle-pg"
 
 export interface Directory {
   readonly directory: AbsolutePath
@@ -28,7 +28,7 @@ export const RemoveInput = Schema.Struct({
 })
 export type RemoveInput = typeof RemoveInput.Type
 
-type DatabaseClient = EffectDrizzleSqlite.EffectSQLiteDatabase
+type DatabaseClient = EffectDrizzlePg.EffectPgDatabase
 export type Transaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0]
 
 export const ListInput = Schema.Struct({
@@ -77,7 +77,7 @@ export const layer = Layer.effect(
             })
           : insert.onConflictDoNothing()
       return (
-        (yield* query.returning({ directory: ProjectDirectoryTable.directory }).get().pipe(Effect.orDie)) !== undefined
+        (yield* query.returning({ directory: ProjectDirectoryTable.directory }).pipe(Effect.orDie)).length > 0
       )
     })
 
@@ -92,8 +92,7 @@ export const layer = Layer.effect(
             ),
           )
           .returning({ directory: ProjectDirectoryTable.directory })
-          .get()
-          .pipe(Effect.orDie)) !== undefined
+          .pipe(Effect.orDie)).length > 0
       )
     })
 
@@ -103,7 +102,6 @@ export const layer = Layer.effect(
         .from(ProjectDirectoryTable)
         .where(eq(ProjectDirectoryTable.project_id, projectID))
         .orderBy(desc(ProjectDirectoryTable.time_created), asc(ProjectDirectoryTable.directory))
-        .all()
         .pipe(Effect.orDie)
       return rows.map((row) => ({ directory: row.directory, strategy: row.strategy ?? undefined }))
     })
@@ -122,8 +120,7 @@ export const layer = Layer.effect(
               eq(ProjectDirectoryTable.directory, input.directory),
             ),
           )
-          .get()
-          .pipe(Effect.orDie)) !== undefined
+          .pipe(Effect.orDie)).length > 0
       )
     })
 
@@ -131,7 +128,7 @@ export const layer = Layer.effect(
       projectID: ProjectSchema.ID
       directory: AbsolutePath
     }) {
-      const row = yield* db
+      const [row] = yield* db
         .select({ directory: ProjectDirectoryTable.directory, strategy: ProjectDirectoryTable.strategy })
         .from(ProjectDirectoryTable)
         .where(
@@ -140,7 +137,6 @@ export const layer = Layer.effect(
             eq(ProjectDirectoryTable.directory, input.directory),
           ),
         )
-        .get()
         .pipe(Effect.orDie)
       return row ? { directory: row.directory, strategy: row.strategy ?? undefined } : undefined
     })

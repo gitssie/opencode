@@ -1,5 +1,5 @@
 import nodePath from "path"
-import { customType } from "drizzle-orm/sqlite-core"
+import { customType } from "drizzle-orm/pg-core"
 import { AbsolutePath } from "../schema"
 
 function storagePath(input: string) {
@@ -73,6 +73,27 @@ export const pathColumn = customType<{
     return storagePath(input)
   },
 })
+
+/**
+ * Postgres has no equivalent of sqlite's `text({ mode: "json" })`, which
+ * auto-serializes on write and parses on read. This customType reproduces that
+ * behaviour over a plain `text` column (storage parity with the old sqlite
+ * schema) while keeping the typed `$type<T>()` brand honest.
+ *
+ * Usage: `jsonColumn<Foo>()` — returns a `text` column that JSON-(de)serializes.
+ */
+export const jsonColumn = <T>() =>
+  customType<{ data: T; driverData: string; driverOutput: string }>({
+    dataType() {
+      return "text"
+    },
+    toDriver(input) {
+      return JSON.stringify(input)
+    },
+    fromDriver(input) {
+      return JSON.parse(input) as T
+    },
+  })()
 
 export const absoluteArrayColumn = customType<{
   data: AbsolutePath[]

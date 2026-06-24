@@ -43,7 +43,7 @@ const fromRow = (row: typeof SessionInputTable.$inferSelect): Admitted =>
   })
 
 export const find = Effect.fn("SessionInput.find")(function* (db: DatabaseService, id: SessionMessage.ID) {
-  const row = yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).get().pipe(Effect.orDie)
+  const [row] = yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).pipe(Effect.orDie)
   return row === undefined ? undefined : fromRow(row)
 })
 
@@ -97,11 +97,10 @@ export const latestSeq = Effect.fn("SessionInput.latestSeq")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
 ) {
-  const row = yield* db
+  const [row] = yield* db
     .select({ seq: EventSequenceTable.seq })
     .from(EventSequenceTable)
     .where(eq(EventSequenceTable.aggregate_id, sessionID))
-    .get()
     .pipe(Effect.orDie)
   return row?.seq ?? -1
 })
@@ -117,14 +116,13 @@ export const projectAdmitted = Effect.fn("SessionInput.projectAdmitted")(functio
     readonly timeCreated: DateTime.Utc
   },
 ) {
-  const message = yield* db
+  const [message] = yield* db
     .select({ id: SessionMessageTable.id })
     .from(SessionMessageTable)
     .where(eq(SessionMessageTable.id, input.id))
-    .get()
     .pipe(Effect.orDie)
   if (message) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
-  const stored = yield* db
+  const [stored] = yield* db
     .insert(SessionInputTable)
     .values({
       id: input.id,
@@ -136,7 +134,6 @@ export const projectAdmitted = Effect.fn("SessionInput.projectAdmitted")(functio
     })
     .onConflictDoNothing()
     .returning({ id: SessionInputTable.id })
-    .get()
     .pipe(Effect.orDie)
   if (!stored) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
 })
@@ -151,7 +148,7 @@ export const projectPromoted = Effect.fn("SessionInput.projectPromoted")(functio
     readonly promotedSeq: number
   },
 ) {
-  const updated = yield* db
+  const [updated] = yield* db
     .update(SessionInputTable)
     .set({ promoted_seq: input.promotedSeq })
     .where(
@@ -162,7 +159,6 @@ export const projectPromoted = Effect.fn("SessionInput.projectPromoted")(functio
       ),
     )
     .returning()
-    .get()
     .pipe(Effect.orDie)
   if (!updated) return yield* Effect.die(new LifecycleConflict({ id: input.id }))
   const stored = fromRow(updated)
@@ -179,7 +175,7 @@ export const hasPending = Effect.fn("SessionInput.hasPending")(function* (
   sessionID: SessionSchema.ID,
   delivery: Delivery,
 ) {
-  const row = yield* db
+  const [row] = yield* db
     .select({ id: SessionInputTable.id })
     .from(SessionInputTable)
     .where(
@@ -190,7 +186,6 @@ export const hasPending = Effect.fn("SessionInput.hasPending")(function* (
       ),
     )
     .limit(1)
-    .get()
     .pipe(Effect.orDie)
   return row !== undefined
 })
@@ -219,11 +214,10 @@ export const guardReservedID = Effect.fn("SessionInput.guardReservedID")(functio
     return
   const id = reservedID(event)
   if (id === undefined) return
-  const admitted = yield* db
+  const [admitted] = yield* db
     .select({ id: SessionInputTable.id })
     .from(SessionInputTable)
     .where(eq(SessionInputTable.id, id))
-    .get()
     .pipe(Effect.orDie)
   if (admitted === undefined) return
   return yield* Effect.die(new LifecycleConflict({ id }))
@@ -250,7 +244,7 @@ export const projectLegacyPrompted = Effect.fn("SessionInput.projectLegacyPrompt
     readonly promotedSeq: number
   },
 ) {
-  const inserted = yield* db
+  const [inserted] = yield* db
     .insert(SessionInputTable)
     .values({
       id: input.id,
@@ -263,7 +257,6 @@ export const projectLegacyPrompted = Effect.fn("SessionInput.projectLegacyPrompt
     })
     .onConflictDoNothing()
     .returning()
-    .get()
     .pipe(Effect.orDie)
   if (!inserted) return yield* Effect.die("Prompt projection conflicts with admitted input")
   return fromRow(inserted)
@@ -315,7 +308,6 @@ export const promoteSteers = Effect.fn("SessionInput.promoteSteers")(function* (
       ),
     )
     .orderBy(asc(SessionInputTable.admitted_seq))
-    .all()
     .pipe(Effect.orDie)
   return yield* publish(db, events, sessionID, rows)
 })
@@ -325,7 +317,7 @@ export const promoteNextQueued = Effect.fn("SessionInput.promoteNextQueued")(fun
   events: EventV2.Interface,
   sessionID: SessionSchema.ID,
 ) {
-  const row = yield* db
+  const [row] = yield* db
     .select()
     .from(SessionInputTable)
     .where(
@@ -337,7 +329,6 @@ export const promoteNextQueued = Effect.fn("SessionInput.promoteNextQueued")(fun
     )
     .orderBy(asc(SessionInputTable.admitted_seq))
     .limit(1)
-    .get()
     .pipe(Effect.orDie)
   return row === undefined ? false : yield* publish(db, events, sessionID, [row]).pipe(Effect.as(true))
 })

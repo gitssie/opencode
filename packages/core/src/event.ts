@@ -258,11 +258,10 @@ export const layerWith = (options?: LayerOptions) =>
                     .transaction(
                       () =>
                         Effect.gen(function* () {
-                          const row = yield* db
+                          const [row] = yield* db
                             .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
                             .from(EventSequenceTable)
                             .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-                            .get()
                             .pipe(Effect.orDie)
                           const latest = row?.seq ?? -1
                           const encoded = syncRegistry
@@ -277,11 +276,10 @@ export const layerWith = (options?: LayerOptions) =>
                             )
                           }
                           if (input && input.seq <= latest) {
-                            const stored = yield* db
+                            const [stored] = yield* db
                               .select()
                               .from(EventTable)
                               .where(and(eq(EventTable.aggregate_id, aggregateID), eq(EventTable.seq, input.seq)))
-                              .get()
                               .pipe(Effect.orDie)
                             if (
                               stored?.id === event.id &&
@@ -293,7 +291,6 @@ export const layerWith = (options?: LayerOptions) =>
                                   .update(EventSequenceTable)
                                   .set({ owner_id: input.ownerID })
                                   .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-                                  .run()
                                   .pipe(Effect.orDie)
                               }
                               return
@@ -317,11 +314,10 @@ export const layerWith = (options?: LayerOptions) =>
                               }),
                             )
                           }
-                          const stored = yield* db
+                          const [stored] = yield* db
                             .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
                             .from(EventTable)
                             .where(eq(EventTable.id, event.id))
-                            .get()
                             .pipe(Effect.orDie)
                           if (stored)
                             yield* Effect.die(
@@ -347,7 +343,6 @@ export const layerWith = (options?: LayerOptions) =>
                                 ...(input?.ownerID && row?.ownerID == null ? { owner_id: input.ownerID } : {}),
                               },
                             })
-                            .run()
                             .pipe(Effect.orDie)
                           yield* db
                             .insert(EventTable)
@@ -360,11 +355,9 @@ export const layerWith = (options?: LayerOptions) =>
                                 data: encoded,
                               },
                             ])
-                            .run()
                             .pipe(Effect.orDie)
                           return { aggregateID, seq }
                         }),
-                      { behavior: "immediate" },
                     )
                     .pipe(Effect.orDie)
                   if (committed) {
@@ -519,8 +512,8 @@ export const layerWith = (options?: LayerOptions) =>
         return db
           .transaction(() =>
             Effect.gen(function* () {
-              yield* db.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).run()
-              yield* db.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).run()
+              yield* db.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID))
+              yield* db.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID))
             }),
           )
           .pipe(Effect.orDie)
@@ -531,7 +524,6 @@ export const layerWith = (options?: LayerOptions) =>
           .update(EventSequenceTable)
           .set({ owner_id: ownerID })
           .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-          .run()
           .pipe(Effect.orDie)
       }
 
@@ -566,8 +558,7 @@ export const layerWith = (options?: LayerOptions) =>
               .select()
               .from(EventTable)
               .where(and(eq(EventTable.aggregate_id, aggregateID), gt(EventTable.seq, after)))
-              .orderBy(asc(EventTable.seq))
-              .all(),
+              .orderBy(asc(EventTable.seq)),
           ),
           Effect.orDie,
           Effect.map((rows) =>
