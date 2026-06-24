@@ -621,6 +621,10 @@ describe("SessionRunnerLLM", () => {
       response = []
 
       const message = yield* session.prompt({ sessionID, prompt: new Prompt({ text: "Run automatically" }) })
+      // prompt() forks the run (fire-and-forget wake); await the runner reaching
+      // idle before asserting. Under sqlite's synchronous in-process driver the
+      // forked turn completed within prompt(); postgres' async I/O does not.
+      yield* (yield* SessionRunCoordinator.Service).awaitIdle(sessionID)
 
       expect(requests).toHaveLength(1)
       expect(yield* session.messages({ sessionID })).toMatchObject([
@@ -700,7 +704,7 @@ describe("SessionRunnerLLM", () => {
       yield* events.publish(SessionEvent.Moved, {
         sessionID,
         timestamp: DateTime.makeUnsafe(1),
-        location: { directory: AbsolutePath.make("/moved") },
+        location: Location.Ref.make({ directory: AbsolutePath.make("/moved") }),
       })
       expect(
         (yield* db
@@ -756,7 +760,7 @@ describe("SessionRunnerLLM", () => {
           .publish(SessionEvent.Moved, {
             sessionID,
             timestamp: DateTime.makeUnsafe(1),
-            location: { directory: AbsolutePath.make("/moved") },
+            location: Location.Ref.make({ directory: AbsolutePath.make("/moved") }),
           })
           .pipe(Effect.asVoid)
       })
@@ -2524,7 +2528,9 @@ describe("SessionRunnerLLM", () => {
       streamFailure = undefined
       streamGate = undefined
       streamStarted = undefined
-      yield* Effect.yieldNow
+      // The steering prompt's fire-and-forget wake drives the recovery turn; wait
+      // for the runner to settle instead of relying on a single scheduler tick.
+      yield* (yield* SessionRunCoordinator.Service).awaitIdle(sessionID)
 
       expect(requests).toHaveLength(2)
       expect(userTexts(requests[1]!)).toEqual(["Start working", "Recover with this"])
@@ -2702,8 +2708,11 @@ describe("SessionRunnerLLM", () => {
       })
 
       requests.length = 0
-      yield* (yield* SessionRunCoordinator.Service).wake(sessionID)
-      yield* Effect.yieldNow
+      const coordinator = yield* SessionRunCoordinator.Service
+      yield* coordinator.wake(sessionID)
+      // wake() schedules the drain on a background fiber; await idle rather than a
+      // single tick so the queued turn completes under postgres' async I/O.
+      yield* coordinator.awaitIdle(sessionID)
 
       expect(requests).toHaveLength(1)
       expect(userTexts(requests[0]!)).toEqual(["Wait for fresh activity"])
@@ -2800,7 +2809,10 @@ describe("SessionRunnerLLM", () => {
       const first = yield* session.resume(sessionID).pipe(Effect.forkChild)
       yield* Deferred.await(streamStarted)
       const second = yield* session.resume(otherSessionID).pipe(Effect.forkChild)
-      yield* Effect.yieldNow
+      // Both turns block at streamGate once they reach the provider request. Wait
+      // until both requests have been issued instead of a single scheduler tick,
+      // which sufficed only under sqlite's synchronous driver.
+      yield* Effect.repeat(Effect.yieldNow, { until: () => requests.length >= 2 })
 
       expect(requests).toHaveLength(2)
       expect(requests.map((request) => request.providerOptions?.openai?.promptCacheKey)).toEqual([
