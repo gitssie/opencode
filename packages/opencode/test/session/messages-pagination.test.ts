@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Database } from "@opencode-ai/core/database/database"
+import { Effect, Layer, Option } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
-import { ModelID, ProviderID } from "../../src/provider/schema"
+
 import { NotFoundError } from "@/storage/storage"
-import * as Log from "@opencode-ai/core/util/log"
 import { testEffect } from "../lib/effect"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 
-void Log.init({ print: false })
-
-const it = testEffect(SessionNs.defaultLayer)
+const it = testEffect(Layer.mergeAll(SessionNs.defaultLayer, Database.defaultLayer))
 
 const withSession = <A, E, R>(
   fn: (input: { session: SessionNs.Interface; sessionID: SessionID }) => Effect.Effect<A, E, R>,
@@ -45,7 +46,7 @@ const fill = Effect.fn("Test.fill")(function* (
       model: { providerID: "test", modelID: "test" },
       tools: {},
       mode: "",
-    } as unknown as MessageV2.Info)
+    } as unknown as SessionV1.Info)
     yield* session.updatePart({
       id: PartID.ascending(),
       sessionID,
@@ -69,7 +70,7 @@ const addUser = Effect.fn("Test.addUser")(function* (sessionID: SessionID, text?
     model: { providerID: "test", modelID: "test" },
     tools: {},
     mode: "",
-  } as unknown as MessageV2.Info)
+  } as unknown as SessionV1.Info)
   if (text) {
     yield* session.updatePart({
       id: PartID.ascending(),
@@ -85,7 +86,7 @@ const addUser = Effect.fn("Test.addUser")(function* (sessionID: SessionID, text?
 const addAssistant = Effect.fn("Test.addAssistant")(function* (
   sessionID: SessionID,
   parentID: MessageID,
-  opts?: { summary?: boolean; finish?: string; error?: MessageV2.Assistant["error"] },
+  opts?: { summary?: boolean; finish?: string; error?: SessionV1.Assistant["error"] },
 ) {
   const session = yield* SessionNs.Service
   const id = MessageID.ascending()
@@ -95,8 +96,8 @@ const addAssistant = Effect.fn("Test.addAssistant")(function* (
     role: "assistant",
     time: { created: Date.now() },
     parentID,
-    modelID: ModelID.make("test"),
-    providerID: ProviderID.make("test"),
+    modelID: ModelV2.ID.make("test"),
+    providerID: ProviderV2.ID.make("test"),
     mode: "",
     agent: "default",
     path: { cwd: "/", root: "/" },
@@ -105,7 +106,7 @@ const addAssistant = Effect.fn("Test.addAssistant")(function* (
     summary: opts?.summary,
     finish: opts?.finish,
     error: opts?.error,
-  } as unknown as MessageV2.Info)
+  } as unknown as SessionV1.Info)
   return id
 })
 
@@ -310,7 +311,7 @@ describe("MessageV2.stream", () => {
       Effect.gen(function* () {
         const ids = yield* fill(sessionID, 5)
 
-        const items = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const items = yield* MessageV2.stream(sessionID)
         expect(items.map((item) => item.info.id)).toEqual(ids.slice().reverse())
       }),
     ),
@@ -319,7 +320,7 @@ describe("MessageV2.stream", () => {
   it.instance("yields nothing for empty session", () =>
     withSession(({ sessionID }) =>
       Effect.gen(function* () {
-        const items = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const items = yield* MessageV2.stream(sessionID)
         expect(items).toHaveLength(0)
       }),
     ),
@@ -330,7 +331,7 @@ describe("MessageV2.stream", () => {
       Effect.gen(function* () {
         const ids = yield* fill(sessionID, 1)
 
-        const items = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const items = yield* MessageV2.stream(sessionID)
         expect(items).toHaveLength(1)
         expect(items[0].info.id).toBe(ids[0])
       }),
@@ -342,7 +343,7 @@ describe("MessageV2.stream", () => {
       Effect.gen(function* () {
         yield* fill(sessionID, 3)
 
-        const items = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const items = yield* MessageV2.stream(sessionID)
         for (const item of items) {
           expect(item.parts).toHaveLength(1)
           expect(item.parts[0].type).toBe("text")
@@ -356,7 +357,7 @@ describe("MessageV2.stream", () => {
       Effect.gen(function* () {
         const ids = yield* fill(sessionID, 60)
 
-        const items = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const items = yield* MessageV2.stream(sessionID)
         expect(items).toHaveLength(60)
         expect(items[0].info.id).toBe(ids[ids.length - 1])
         expect(items[59].info.id).toBe(ids[0])
@@ -364,17 +365,13 @@ describe("MessageV2.stream", () => {
     ),
   )
 
-  it.instance("is an async generator", () =>
+  it.instance("returns an Effect", () =>
     withSession(({ sessionID }) =>
       Effect.gen(function* () {
         yield* fill(sessionID, 1)
 
-        const gen = MessageV2.stream(sessionID)
-        const first = yield* Effect.promise(() => gen.next())
-        // async generator returns { value, done } via a Promise
-        expect(first).toHaveProperty("value")
-        expect(first).toHaveProperty("done")
-        expect(first.done).toBe(false)
+        const result = yield* MessageV2.stream(sessionID)
+        expect(result).toHaveLength(1)
       }),
     ),
   )
@@ -386,10 +383,10 @@ describe("MessageV2.parts", () => {
       Effect.gen(function* () {
         const [id] = yield* fill(sessionID, 1)
 
-        const result = yield* Effect.promise(() => MessageV2.parts(id))
+        const result = yield* MessageV2.parts(id)
         expect(result).toHaveLength(1)
         expect(result[0].type).toBe("text")
-        expect((result[0] as MessageV2.TextPart).text).toBe("m0")
+        expect((result[0] as SessionV1.TextPart).text).toBe("m0")
       }),
     ),
   )
@@ -399,7 +396,7 @@ describe("MessageV2.parts", () => {
       Effect.gen(function* () {
         const id = yield* addUser(sessionID)
 
-        const result = yield* Effect.promise(() => MessageV2.parts(id))
+        const result = yield* MessageV2.parts(id)
         expect(result).toEqual([])
       }),
     ),
@@ -425,11 +422,11 @@ describe("MessageV2.parts", () => {
           text: "third",
         })
 
-        const result = yield* Effect.promise(() => MessageV2.parts(id))
+        const result = yield* MessageV2.parts(id)
         expect(result).toHaveLength(3)
-        expect((result[0] as MessageV2.TextPart).text).toBe("m0")
-        expect((result[1] as MessageV2.TextPart).text).toBe("second")
-        expect((result[2] as MessageV2.TextPart).text).toBe("third")
+        expect((result[0] as SessionV1.TextPart).text).toBe("m0")
+        expect((result[1] as SessionV1.TextPart).text).toBe("second")
+        expect((result[2] as SessionV1.TextPart).text).toBe("third")
       }),
     ),
   )
@@ -437,7 +434,7 @@ describe("MessageV2.parts", () => {
   it.instance("returns empty for non-existent message id", () =>
     Effect.gen(function* () {
       yield* SessionNs.Service
-        const result = yield* Effect.promise(() => MessageV2.parts(MessageID.ascending()))
+      const result = yield* MessageV2.parts(MessageID.ascending())
       expect(result).toEqual([])
     }),
   )
@@ -447,7 +444,7 @@ describe("MessageV2.parts", () => {
       Effect.gen(function* () {
         const [id] = yield* fill(sessionID, 1)
 
-        const result = yield* Effect.promise(() => MessageV2.parts(id))
+        const result = yield* MessageV2.parts(id)
         expect(result[0].sessionID).toBe(sessionID)
         expect(result[0].messageID).toBe(id)
       }),
@@ -466,7 +463,7 @@ describe("MessageV2.get", () => {
         expect(result.info.sessionID).toBe(sessionID)
         expect(result.info.role).toBe("user")
         expect(result.parts).toHaveLength(1)
-        expect((result.parts[0] as MessageV2.TextPart).text).toBe("m0")
+        expect((result.parts[0] as SessionV1.TextPart).text).toBe("m0")
       }),
     ),
   )
@@ -536,7 +533,7 @@ describe("MessageV2.get", () => {
         const result = yield* MessageV2.get({ sessionID, messageID: aid })
         expect(result.info.role).toBe("assistant")
         expect(result.parts).toHaveLength(1)
-        expect((result.parts[0] as MessageV2.TextPart).text).toBe("response")
+        expect((result.parts[0] as SessionV1.TextPart).text).toBe("response")
       }),
     ),
   )
@@ -604,9 +601,7 @@ describe("MessageV2.filterCompacted", () => {
       Effect.gen(function* () {
         const ids = yield* fill(sessionID, 5)
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
         expect(result).toHaveLength(5)
         // reversed from newest-first to chronological
         expect(result.map((item) => item.info.id)).toEqual(ids)
@@ -640,9 +635,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "new response",
         })
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
         // Includes compaction boundary: u1, a1, u2, a2
         expect(result[0].info.id).toBe(u1)
         expect(result.length).toBe(4)
@@ -664,9 +657,7 @@ describe("MessageV2.filterCompacted", () => {
         yield* addCompactionPart(sessionID, u1)
         yield* addUser(sessionID, "world")
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
         expect(result).toHaveLength(2)
       }),
     ),
@@ -678,16 +669,14 @@ describe("MessageV2.filterCompacted", () => {
         const u1 = yield* addUser(sessionID, "hello")
         yield* addCompactionPart(sessionID, u1)
 
-        const error = new MessageV2.APIError({
+        const error = new SessionV1.APIError({
           message: "boom",
           isRetryable: true,
-        }).toObject() as MessageV2.Assistant["error"]
+        }).toObject() as SessionV1.Assistant["error"]
         yield* addAssistant(sessionID, u1, { summary: true, finish: "end_turn", error })
         yield* addUser(sessionID, "retry")
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
         // Error assistant doesn't add to completed, so compaction boundary never triggers
         expect(result).toHaveLength(3)
       }),
@@ -704,9 +693,7 @@ describe("MessageV2.filterCompacted", () => {
         yield* addAssistant(sessionID, u1, { summary: true })
         yield* addUser(sessionID, "next")
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
         expect(result).toHaveLength(3)
       }),
     ),
@@ -756,9 +743,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
       }),
@@ -811,15 +796,11 @@ describe("MessageV2.filterCompacted", () => {
         text: "third reply",
       })
 
-      const parentFiltered = MessageV2.filterCompacted(
-        yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(created.id))),
-      )
+      const parentFiltered = MessageV2.filterCompacted(yield* MessageV2.stream(created.id))
       expect(parentFiltered.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
 
       const forked = yield* session.fork({ sessionID: created.id })
-      const childFiltered = MessageV2.filterCompacted(
-        yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(forked.id))),
-      )
+      const childFiltered = MessageV2.filterCompacted(yield* MessageV2.stream(forked.id))
       expect(childFiltered).toHaveLength(parentFiltered.length)
 
       const tailPart = childFiltered.flatMap((m) => m.parts).find((p) => p.type === "compaction")
@@ -885,9 +866,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, a3, u3, a4])
       }),
@@ -959,9 +938,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "fourth reply",
         })
 
-        const result = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
+        const result = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
 
         expect(result.map((item) => item.info.id)).toEqual([c2, s2, u3, a3, u4, a4])
       }),
@@ -971,7 +948,7 @@ describe("MessageV2.filterCompacted", () => {
   test("works with array input", () => {
     // filterCompacted accepts any Iterable, not just generators
     const id = MessageID.ascending()
-    const items: MessageV2.WithParts[] = [
+    const items: SessionV1.WithParts[] = [
       {
         info: {
           id,
@@ -980,8 +957,8 @@ describe("MessageV2.filterCompacted", () => {
           time: { created: 1 },
           agent: "test",
           model: { providerID: "test", modelID: "test" },
-        } as unknown as MessageV2.Info,
-        parts: [{ type: "text", text: "hello" }] as unknown as MessageV2.Part[],
+        } as unknown as SessionV1.Info,
+        parts: [{ type: "text", text: "hello" }] as unknown as SessionV1.Part[],
       },
     ]
     const result = MessageV2.filterCompacted(items)
@@ -1034,7 +1011,7 @@ describe("MessageV2 consistency", () => {
         const [id] = yield* fill(sessionID, 1)
 
         const got = yield* MessageV2.get({ sessionID, messageID: id })
-        const standalone = yield* Effect.promise(() => MessageV2.parts(id))
+        const standalone = yield* MessageV2.parts(id)
         expect(got.parts).toEqual(standalone)
       }),
     ),
@@ -1045,9 +1022,9 @@ describe("MessageV2 consistency", () => {
       Effect.gen(function* () {
         yield* fill(sessionID, 7)
 
-        const streamed = yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))
+        const streamed = yield* MessageV2.stream(sessionID)
 
-        const paged = [] as MessageV2.WithParts[]
+        const paged = [] as SessionV1.WithParts[]
         let cursor: string | undefined
         while (true) {
           const result = yield* MessageV2.page({ sessionID, limit: 3, before: cursor })
@@ -1068,10 +1045,9 @@ describe("MessageV2 consistency", () => {
       Effect.gen(function* () {
         yield* fill(sessionID, 4)
 
-        const filtered = MessageV2.filterCompacted(
-          yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID))),
-        )
-        const all = (yield* Effect.promise(() => Array.fromAsync(MessageV2.stream(sessionID)))).reverse()
+        const stream = yield* MessageV2.stream(sessionID)
+        const filtered = MessageV2.filterCompacted(stream)
+        const all = stream.toReversed()
 
         expect(filtered.map((m) => m.info.id)).toEqual(all.map((m) => m.info.id))
       }),
