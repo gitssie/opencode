@@ -258,12 +258,18 @@ export const layerWith = (options?: LayerOptions) =>
                     .transaction(
                       () =>
                         Effect.gen(function* () {
+                          yield* db
+                            .insert(EventSequenceTable)
+                            .values({ aggregate_id: aggregateID, seq: -1, owner_id: input?.ownerID })
+                            .onConflictDoNothing()
+                            .pipe(Effect.orDie)
                           const [row] = yield* db
                             .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
                             .from(EventSequenceTable)
                             .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+                            .for("update")
                             .pipe(Effect.orDie)
-                          const latest = row?.seq ?? -1
+                          const latest = row!.seq
                           const encoded = syncRegistry
                             .get(versionedType(definition.type, sync.version))!
                             .encode(event.data) as Record<string, unknown>
